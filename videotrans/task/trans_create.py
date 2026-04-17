@@ -663,6 +663,9 @@ class TransCreate(BaseTask):
                 logger.debug('分离说话人成功完成')
                 shutil.copy2(self.cfg.cache_folder + "/speaker.json", self.cfg.target_dir + "/speaker.json")
                 self.extract_speaker_refs(spk_list)
+                # L2 跨集匹配: diariz 刚完成, spkN_ref.wav 已就绪, 按声纹匹配
+                # drama.json 里已有角色, 自动写 spk_to_character.json 供下游 Step5 复用
+                self._auto_match_speakers_by_embedding()
             self._signal(text=tr('separating speakers end'))
         except:
             pass
@@ -853,6 +856,90 @@ class TransCreate(BaseTask):
         logger.info(f'Step5 克隆参考音频映射: {summary}')
         self._signal(text=f'Speaker → Clone Ref: {summary}')
         return spk_list, valid_map
+
+    def _auto_match_speakers_by_embedding(self) -> None:
+        """L2 核心: diariz 完成后按声纹相似度把本集 spk_id 匹配到 drama.json 已录角色。
+
+        产出 {cache_folder}/spk_to_character.json (若命中任何角色),
+        下游 _apply_voice_library 会按这个映射复用 ref.wav / fixed_voice。
+
+        命中规则:
+          - 余弦相似度 >= 阈值 (默认 0.70) → 自动匹配
+          - 多 spk 匹到同一 character: 取分最高的 spk, 其他留空
+          - 未命中的 spk 完全不写 (等 UI 对话框让用户手动命名 → 同时录声纹)
+
+        失败静默降级, 不阻塞主流程。批量模式 (无 UI) 下这是唯一的跨集链路。
+        """
+        try:
+            from videotrans.util.voice_library import get_drama_dir, list_embeddings
+            from videotrans.util.speaker_embedding import match_best
+
+            refs_json = Path(self.cfg.cache_folder + "/speaker_refs.json")
+            if not refs_json.exists() or not self.cfg.name:
+                return
+            ref_info = json.loads(refs_json.read_text(encoding='utf-8'))
+            if not ref_info:
+                return
+
+            drama_dir = get_drama_dir(self.cfg.name)
+            candidates = list_embeddings(drama_dir)
+            if not candidates:
+                # 首次入库, 无候选声纹, 跳过自动匹配 (依赖用户手动命名录声纹)
+                logger.info(f'[voice_library] {drama_dir.name}: 无候选声纹, 跳过自动匹配 (首集)')
+                return
+
+            # 逐 spk 提取声纹 → 与 drama.json 候选求最相似
+            from videotrans.util.speaker_embedding import compute_embedding
+
+            # 收集 (spk_id, match_name, score) 用于冲突去重
+            hits: list = []
+            for spk_id, info in ref_info.items():
+                wav = info.get('wav', '')
+                if not wav or not Path(wav).exists():
+                    continue
+                emb = compute_embedding(wav)
+                if not emb:
+                    continue
+                m = match_best(emb, candidates)
+                if m is None:
+                    continue
+                name, score = m
+                hits.append((spk_id, name, score))
+                logger.info(f'[voice_library] 匹配 {spk_id} → "{name}" (score={score:.3f})')
+
+            if not hits:
+                logger.info(f'[voice_library] {drama_dir.name}: 本集无角色通过阈值')
+                return
+
+            # 冲突去重: 同一 character 名下只保留分最高的 spk
+            # (避免两个 spk 都指到同一角色, 后者会覆盖前者的库写入)
+            best_per_name: dict = {}
+            for spk_id, name, score in hits:
+                prev = best_per_name.get(name)
+                if prev is None or score > prev[1]:
+                    best_per_name[name] = (spk_id, score)
+
+            mapping = {spk_id: name for name, (spk_id, _) in best_per_name.items()}
+
+            mapping_path = Path(f'{self.cfg.cache_folder}/spk_to_character.json')
+            # 若 UI 已写过 (不太可能, diariz 在对话框前), 不覆盖用户操作
+            if mapping_path.exists():
+                try:
+                    existing = json.loads(mapping_path.read_text(encoding='utf-8'))
+                    if existing.get('mapping'):
+                        return
+                except Exception:
+                    pass
+
+            mapping_path.write_text(json.dumps({
+                'drama_dir': str(drama_dir),
+                'mapping': mapping,
+                'auto_matched': True,
+            }, ensure_ascii=False, indent=2), encoding='utf-8')
+            logger.info(f'[voice_library] 自动匹配写入 {len(mapping)} 条: {mapping_path}')
+            self._signal(text=f'[VoiceLib] auto-matched: {mapping}')
+        except Exception as e:
+            logger.warning(f'[voice_library] 自动声纹匹配失败, 降级: {e}')
 
     def _apply_voice_library(self, valid_map: dict) -> None:
         """根据 spk_to_character.json 用库里的 ref.wav 替换 valid_map 中的 wav 路径。

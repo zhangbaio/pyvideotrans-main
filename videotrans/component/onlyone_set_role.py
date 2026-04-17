@@ -76,6 +76,28 @@ class SpeakerAssignmentDialog(QDialog):
 
         self.all_voices = all_voices or []
 
+        # L2: 预读 spk_to_character.json (若 diariz 阶段已做自动声纹匹配)
+        # 用于 _create_speaker_assignment_area 里预填输入框/下拉
+        self.auto_matched_spk2name: dict = {}
+        try:
+            _sm_path = Path(f'{self.cache_folder}/spk_to_character.json')
+            if _sm_path.exists():
+                _sm_data = json.loads(_sm_path.read_text(encoding='utf-8'))
+                self.auto_matched_spk2name = dict(_sm_data.get('mapping', {}) or {})
+                # 根据匹配到的角色, 同步回填 fixed_voice (用户打开对话框就看到最终效果)
+                if self.drama_dir is not None and self.auto_matched_spk2name:
+                    try:
+                        from videotrans.util.voice_library import get_fixed_voice
+                        for spk_id, ch_name in self.auto_matched_spk2name.items():
+                            if spk_id in self.speakers:
+                                v = get_fixed_voice(self.drama_dir, ch_name)
+                                if v and (not self.all_voices or v in self.all_voices):
+                                    self.speakers[spk_id] = v
+                    except Exception as e:
+                        logger.warning(f'[voice_library] 预填 fixed_voice 失败: {e}')
+        except Exception as e:
+            logger.warning(f'[voice_library] 读 spk_to_character.json 失败: {e}')
+
         # 自动为每个说话人轮询分配一个固定音色 (用户仍可在 UI 里手动改)
         # 设计 (Linus): 只有 (a) 检测到多说话人 (b) 音色池非空 时才触发
         # 不偷偷开 diariz, 不替换用户已手动分配的值
@@ -476,11 +498,23 @@ class SpeakerAssignmentDialog(QDialog):
                 name_edit = QLineEdit()
                 name_edit.setPlaceholderText(tr('Character name (blank = skip library)'))
                 name_edit.setMinimumWidth(160)
-                grid_layout.addWidget(name_edit, i, col); col += 1
 
                 name_combo = QComboBox()
                 name_combo.addItems(existing_names)
                 name_combo.setMinimumWidth(140)
+
+                # L2 预填: diariz 阶段声纹已匹配到某角色 → 输入框和下拉同步预选
+                auto_name = self.auto_matched_spk2name.get(spk_id, '')
+                if auto_name:
+                    name_edit.setText(auto_name)
+                    if auto_name in existing_names:
+                        name_combo.setCurrentText(auto_name)
+                    # 加个绿色前缀提示用户"这是自动匹配的"
+                    name_edit.setStyleSheet('color:#00cc66;')
+                    name_edit.setToolTip(tr('Auto-matched by voice embedding, you can modify'))
+
+                grid_layout.addWidget(name_edit, i, col); col += 1
+
                 # 选中下拉 → 回填输入框 + 按角色绑定的固定音色覆盖当前行 (S2: 跨集音色一致性)
                 name_combo.currentTextChanged.connect(
                     lambda text, sid=spk_id, edit=name_edit:
@@ -778,5 +812,34 @@ class SpeakerAssignmentDialog(QDialog):
                 logger.info(f'[voice_library] 回写 fixed_voice 完成 ({len(spk_to_char)} 角色)')
             except Exception as e:
                 logger.warning(f'[voice_library] 回写 fixed_voice 失败: {e}')
+
+            # L2-S4: 回写 embedding 到 drama.json, 下集批量模式就能自动匹配
+            # 读本集 speaker_refs.json 里的 spkN_ref.wav → 提 embedding → 存进角色条目
+            # 已有 embedding 的角色不覆盖 (首次录的声纹通常最纯净)
+            try:
+                from videotrans.util.voice_library import load_drama, set_embedding
+                from videotrans.util.speaker_embedding import compute_embedding
+                refs_json = Path(f'{self.cache_folder}/speaker_refs.json')
+                if refs_json.exists() and spk_to_char:
+                    ref_info = json.loads(refs_json.read_text(encoding='utf-8'))
+                    drama_data = load_drama(self.drama_dir)
+                    existing_chars = drama_data.get('characters', {})
+                    written = 0
+                    for spk_id, char_name in spk_to_char.items():
+                        # 已有 embedding 的角色不重写 (保护首次纯净声纹)
+                        if existing_chars.get(char_name, {}).get('embedding'):
+                            continue
+                        wav = (ref_info.get(spk_id) or {}).get('wav', '')
+                        if not wav or not Path(wav).exists():
+                            continue
+                        emb = compute_embedding(wav)
+                        if not emb:
+                            continue
+                        set_embedding(self.drama_dir, char_name, emb)
+                        written += 1
+                    if written:
+                        logger.info(f'[voice_library] 录入 {written} 个新角色声纹')
+            except Exception as e:
+                logger.warning(f'[voice_library] 录声纹失败: {e}')
 
         self.accept()

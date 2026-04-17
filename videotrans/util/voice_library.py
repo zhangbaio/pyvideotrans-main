@@ -326,6 +326,50 @@ def add_or_extend_character(
 
 # ---------------------------------------------------------------- 片段挑选辅助
 
+def set_embedding(drama_dir: Path, character_name: str, embedding: List[float]) -> None:
+    """把角色声纹 (L2-normalized) 存进 drama.json。用于下集自动匹配。
+
+    embedding 空列表 = 清空 (一般不需要)。角色不存在时自动建空条目。
+    """
+    name = _sanitize(character_name)
+    if not name or not embedding:
+        return
+    data = load_drama(drama_dir)
+    chars = data.setdefault("characters", {})
+    meta = chars.setdefault(name, {
+        "ref": "",
+        "total_sec": 0.0,
+        "episodes": [],
+    })
+    meta["embedding"] = list(embedding)
+    _save_drama(drama_dir, data)
+
+
+def list_embeddings(drama_dir: Path) -> List[Tuple[str, List[float]]]:
+    """返回 [(name, embedding), ...], 仅含已录声纹的角色。供批量匹配用。"""
+    data = load_drama(drama_dir)
+    out = []
+    for name, meta in data.get("characters", {}).items():
+        emb = meta.get("embedding")
+        if emb:
+            out.append((name, list(emb)))
+    return out
+
+
+def match_character(
+    drama_dir: Path,
+    query_embedding: List[float],
+    threshold: float = 0.70,
+) -> Optional[Tuple[str, float]]:
+    """在 drama.json 里找最相似的已录角色。命中返回 (name, score), 否则 None。"""
+    try:
+        from videotrans.util.speaker_embedding import match_best
+    except Exception:
+        return None
+    candidates = list_embeddings(drama_dir)
+    return match_best(query_embedding, candidates, threshold=threshold)
+
+
 def get_fixed_voice(drama_dir: Path, character_name: str) -> Optional[str]:
     """读取角色绑定的固定音色 (跨集一致性)。无则 None。"""
     name = _sanitize(character_name)
