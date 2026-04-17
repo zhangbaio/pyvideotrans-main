@@ -42,6 +42,8 @@ class SpeakerAssignmentDialog(QDialog):
         # drama_dir: 默认用视频父目录名；无 video_path 时退化为 None (完全不启用库)
         self.drama_dir = None
         self.library_characters = []  # [{name, total_sec, episodes}, ...]
+        self.speaker_name_edits = {}
+        self.speaker_name_combos = {}
         if self.video_path:
             try:
                 from videotrans.util.voice_library import get_drama_dir, list_characters

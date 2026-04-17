@@ -526,6 +526,11 @@ class WinAction(WinActionSub):
 
         # 字幕嵌入类型
         self.cfg['subtitle_type'] = self.main.subtitle_type.currentIndex()
+        logger.debug(
+            f"[SubtitleType][UI] currentIndex={self.main.subtitle_type.currentIndex()} "
+            f"currentText={self.main.subtitle_type.currentText()} "
+            f"cfg_subtitle_type={self.cfg['subtitle_type']}"
+        )
 
         # 对齐控制 配音加速 视频慢速
         self.cfg['voice_rate'] = self.main.voice_rate.value()
@@ -621,9 +626,21 @@ class WinAction(WinActionSub):
             return
 
         # 设置各项模式参数
+        logger.debug(
+            f"[SubtitleType][Before set_mode] app_mode={self.main.app_mode} "
+            f"ui_index={self.main.subtitle_type.currentIndex()} "
+            f"ui_text={self.main.subtitle_type.currentText()} "
+            f"cfg_subtitle_type={self.cfg.get('subtitle_type')} "
+            f"voice_role={self.main.voice_role.currentText()}"
+        )
         self.set_mode()
         self.cfg['app_mode'] = self.main.app_mode
         self.cfg['output_srt']=self.main.output_srt.currentIndex()
+        logger.debug(
+            f"[SubtitleType][After set_mode] app_mode={self.main.app_mode} "
+            f"cfg_subtitle_type={self.cfg.get('subtitle_type')} "
+            f"output_srt={self.cfg['output_srt']}"
+        )
 
 
 

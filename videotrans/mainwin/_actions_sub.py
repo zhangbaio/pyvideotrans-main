@@ -435,6 +435,12 @@ class WinActionSub:
         subtitle_type = self.main.subtitle_type.currentIndex()
         voice_role = self.main.voice_role.currentText()
         self.cfg['copysrt_rawvideo'] = False
+        logger.debug(
+            f"[SubtitleType][set_mode] incoming_app_mode={self.main.app_mode} "
+            f"subtitle_type={subtitle_type} "
+            f"subtitle_text={self.main.subtitle_type.currentText()} "
+            f"voice_role={voice_role}"
+        )
         if self.main.app_mode == 'tiqu' or (subtitle_type < 1 and voice_role in ('No', '', " ")):
             self.main.app_mode = 'tiqu'
             # 提取字幕模式，必须有视频、有原始语言，语音模型
@@ -444,6 +450,11 @@ class WinActionSub:
             self.cfg['voice_autorate'] = False
             self.cfg['back_audio'] = ''
             self.cfg['copysrt_rawvideo'] = self.main.copysrt_rawvideo.isChecked()
+            logger.debug(
+                f"[SubtitleType][set_mode] forced_tiqu=True "
+                f"cfg_subtitle_type={self.cfg['subtitle_type']} "
+                f"cfg_voice_role={self.cfg['voice_role']}"
+            )
 
     # 导入背景声音
     def get_background(self):
