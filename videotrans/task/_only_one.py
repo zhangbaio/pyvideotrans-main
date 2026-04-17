@@ -73,7 +73,13 @@ class Worker(QThread):
                 if float(settings.get('countdown_sec',0))>0:
                     app_cfg.task_countdown=86400
                     # 传递过去临时目录，用于获取 speaker.json
-                    self._post(text=f'{trk.cfg.cache_folder}<|>{trk.cfg.target_language_code}<|>{trk.cfg.tts_type}', type="edit_subtitle_target")
+                    # 附带原视频路径 (第 4 段) 给对话框用来推导 drama_dir (声音克隆库)
+                    # 同时持久化到 cache_folder 供后续 Step5 读取
+                    try:
+                        Path(trk.cfg.cache_folder + "/video_path.txt").write_text(trk.cfg.name or '', encoding='utf-8')
+                    except Exception:
+                        pass
+                    self._post(text=f'{trk.cfg.cache_folder}<|>{trk.cfg.target_language_code}<|>{trk.cfg.tts_type}<|>{trk.cfg.name or ""}', type="edit_subtitle_target")
                     self._post(tr('The subtitle editing interface is rendering'))
                     while app_cfg.task_countdown > 0:
                         if self._exit(): return

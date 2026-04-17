@@ -842,10 +842,87 @@ class TransCreate(BaseTask):
         if not valid_map:
             return None, None
 
+        # M3: 声音克隆库接管 —— 若字幕对话框已写入 spk_to_character.json,
+        # 按角色名走 voice_library:
+        #   a) 已有角色 → 复用库里的 ref.wav (跨集复用, 命中即走)
+        #   b) 新角色 → 用本集 spkN_ref.wav 作为素材扩充入库, 然后替换 ref_wav
+        # 匿名说话人 (未在映射里) 完全走原路径, 不入库
+        self._apply_voice_library(valid_map)
+
         summary = ', '.join(f'{k}→{Path(v["wav"]).name}' for k, v in valid_map.items())
         logger.info(f'Step5 克隆参考音频映射: {summary}')
         self._signal(text=f'Speaker → Clone Ref: {summary}')
         return spk_list, valid_map
+
+    def _apply_voice_library(self, valid_map: dict) -> None:
+        """根据 spk_to_character.json 用库里的 ref.wav 替换 valid_map 中的 wav 路径。
+
+        失败静默降级 —— 库系统完全可选, 任何异常都不该阻断主流程。
+        """
+        try:
+            mapping_path = Path(self.cfg.cache_folder + "/spk_to_character.json")
+            if not mapping_path.exists():
+                return
+            data = json.loads(mapping_path.read_text(encoding='utf-8'))
+            drama_dir_str = data.get('drama_dir', '')
+            mapping = data.get('mapping', {}) or {}
+            if not drama_dir_str or not mapping:
+                return
+
+            from videotrans.util.voice_library import (
+                get_ref_path, add_or_extend_character, pick_top_segments,
+            )
+            drama_dir = Path(drama_dir_str)
+            if not drama_dir.exists():
+                return
+
+            episode_id = Path(self.cfg.name).stem if self.cfg.name else drama_dir.name
+
+            for spk_id, character_name in mapping.items():
+                if spk_id not in valid_map:
+                    continue
+                ref_entry = valid_map[spk_id]
+                src_wav = ref_entry.get('wav', '')
+                if not src_wav or not Path(src_wav).exists():
+                    continue
+
+                # (a) 复用: 库里已有该角色 → 直接换 ref.wav 路径
+                lib_ref = get_ref_path(drama_dir, character_name)
+                if lib_ref is not None:
+                    ref_entry['wav'] = str(lib_ref)
+                    logger.info(f'[voice_library] {spk_id} 复用角色 "{character_name}" → {lib_ref}')
+                    self._signal(text=f'[VoiceLib] {spk_id} reuse "{character_name}"')
+                    continue
+
+                # (b) 新角色: 本集 spkN_ref.wav 通常 3-20s, 作为首次素材入库
+                try:
+                    import subprocess
+                    dur_out = subprocess.run(
+                        ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                         '-of', 'default=noprint_wrappers=1:nokey=1', src_wav],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    dur = float((dur_out.stdout or '0').strip() or 0.0)
+                except Exception:
+                    dur = 10.0
+                if dur < 1.5:
+                    continue
+
+                segs = pick_top_segments([(0.0, dur)])
+                new_ref = add_or_extend_character(
+                    drama_dir=drama_dir,
+                    character_name=character_name,
+                    source_wav=src_wav,
+                    segments=segs,
+                    episode_id=episode_id,
+                    ref_text=ref_entry.get('text', ''),
+                )
+                if new_ref is not None:
+                    ref_entry['wav'] = str(new_ref)
+                    logger.info(f'[voice_library] {spk_id} 新建角色 "{character_name}" → {new_ref}')
+                    self._signal(text=f'[VoiceLib] {spk_id} new "{character_name}"')
+        except Exception as e:
+            logger.warning(f'[voice_library] _apply_voice_library 失败, 降级使用原 ref_wav: {e}')
 
     # 翻译字幕文件
     def trans(self) -> None:

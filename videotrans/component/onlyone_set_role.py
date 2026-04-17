@@ -26,7 +26,8 @@ class SpeakerAssignmentDialog(QDialog):
             source_sub: str = None,
             cache_folder=None,
             target_language="en",
-            tts_type=0
+            tts_type=0,
+            video_path: str = ""
     ):
         super().__init__()
         self.parent = parent
@@ -35,6 +36,20 @@ class SpeakerAssignmentDialog(QDialog):
         self.cache_folder = cache_folder
         self.target_language = target_language
         self.tts_type = tts_type
+        self.video_path = video_path or ""
+
+        # --- 声音克隆库 (voice_library) 集成 ---
+        # drama_dir: 默认用视频父目录名；无 video_path 时退化为 None (完全不启用库)
+        self.drama_dir = None
+        self.library_characters = []  # [{name, total_sec, episodes}, ...]
+        if self.video_path:
+            try:
+                from videotrans.util.voice_library import get_drama_dir, list_characters
+                self.drama_dir = get_drama_dir(self.video_path)
+                self.library_characters = list_characters(self.drama_dir)
+            except Exception as e:
+                logger.warning(f'[voice_library] 初始化失败: {e}')
+                self.drama_dir = None
 
         if source_sub:
             sour_pt = Path(source_sub)
@@ -419,16 +434,31 @@ class SpeakerAssignmentDialog(QDialog):
 
         self.speaker_checks = {}
         self.speaker_labels = {}
+        # M2: 每说话人 → 角色名输入 (QLineEdit) + 已有角色下拉 (QComboBox)
+        self.speaker_name_edits = {}    # spk_id → QLineEdit
+        self.speaker_name_combos = {}   # spk_id → QComboBox
+
+        # 若启用了 voice_library, 在顶部加一条提示
+        if self.drama_dir is not None:
+            lib_hint = QLabel(
+                tr('Drama library') + f': {self.drama_dir.name}  '
+                + tr('(Name a speaker to add/reuse cloned voice; leave blank to skip library)')
+            )
+            lib_hint.setStyleSheet('color:#88ccff;font-size:12px;')
+            lib_hint.setWordWrap(True)
+            layout.addWidget(lib_hint)
 
         grid_layout = QGridLayout()
         grid_layout.setContentsMargins(0, 5, 0, 5)
-        grid_layout.setHorizontalSpacing(15)
+        grid_layout.setHorizontalSpacing(10)
         grid_layout.setVerticalSpacing(5)
 
-        for i, spk_id in enumerate(self.speakers):
-            row = i // 3
-            col = (i % 3) * 2
+        # 每说话人一整行: [Sel] [Speaker x] [固定音色 label] [新名输入框] [已有角色下拉]
+        # 列数保持紧凑: drama_dir 为 None 时不显示后两列
+        has_lib = self.drama_dir is not None
+        existing_names = [''] + [c['name'] for c in self.library_characters]
 
+        for i, spk_id in enumerate(self.speakers):
             check = QCheckBox(f'{tr("Speaker")}{spk_id}')
             check.setStyleSheet("color: #dddddd;")
 
@@ -438,8 +468,28 @@ class SpeakerAssignmentDialog(QDialog):
             label.setMinimumWidth(80)
             label.setStyleSheet("color: #ffcccc;")
 
-            grid_layout.addWidget(check, row, col)
-            grid_layout.addWidget(label, row, col + 1)
+            col = 0
+            grid_layout.addWidget(check, i, col); col += 1
+            grid_layout.addWidget(label, i, col); col += 1
+
+            if has_lib:
+                name_edit = QLineEdit()
+                name_edit.setPlaceholderText(tr('Character name (blank = skip library)'))
+                name_edit.setMinimumWidth(160)
+                grid_layout.addWidget(name_edit, i, col); col += 1
+
+                name_combo = QComboBox()
+                name_combo.addItems(existing_names)
+                name_combo.setMinimumWidth(140)
+                # 选中下拉 → 回填输入框 + 按角色绑定的固定音色覆盖当前行 (S2: 跨集音色一致性)
+                name_combo.currentTextChanged.connect(
+                    lambda text, sid=spk_id, edit=name_edit:
+                        self._on_character_selected(sid, text, edit)
+                )
+                grid_layout.addWidget(name_combo, i, col); col += 1
+
+                self.speaker_name_edits[spk_id] = name_edit
+                self.speaker_name_combos[spk_id] = name_combo
 
             self.speaker_checks[check] = spk_id
             self.speaker_labels[check] = label
@@ -493,6 +543,39 @@ class SpeakerAssignmentDialog(QDialog):
         for idx, spk_id in enumerate(self.speakers.keys()):
             if force or self.speakers.get(spk_id) is None:
                 self.speakers[spk_id] = pool[idx % len(pool)]
+
+    def _on_character_selected(self, spk_id, character_name, name_edit):
+        """S2: 用户在"已有角色"下拉选了一项 → 回填输入框 + 查 drama.json 的 fixed_voice 覆盖当前行音色。
+
+        空字符串 = 用户选了第一项空行, 不做任何操作 (不清空)。
+        未绑定固定音色 / 无 drama_dir: 只回填名字, 不改音色。
+        """
+        if not character_name:
+            return
+        # 1) 回填输入框
+        name_edit.setText(character_name)
+        # 2) 跨集音色复用
+        if self.drama_dir is None:
+            return
+        try:
+            from videotrans.util.voice_library import get_fixed_voice
+            bound_voice = get_fixed_voice(self.drama_dir, character_name)
+        except Exception as e:
+            logger.warning(f'[voice_library] get_fixed_voice 失败: {e}')
+            return
+        if not bound_voice:
+            return
+        # 校验这个音色确实在当前 all_voices 里 (避免老 drama.json 里存的旧音色失效)
+        if self.all_voices and bound_voice not in self.all_voices:
+            logger.info(f'[voice_library] 角色 "{character_name}" 绑定音色 {bound_voice} 不在当前池中, 忽略')
+            return
+        self.speakers[spk_id] = bound_voice
+        # 刷新上方该 speaker 行的 label + 表格 Role 列
+        for check, sid in self.speaker_checks.items():
+            if sid == spk_id:
+                self.speaker_labels[check].setText(bound_voice)
+                break
+        self._update_role_column()
 
     def _on_reassign_clicked(self):
         """一键重新自动分配"""
@@ -662,5 +745,38 @@ class SpeakerAssignmentDialog(QDialog):
             QMessageBox.critical(self, "Error", f"Save failed: {e}")
             self.save_button.setDisabled(False)
             return
+
+        # M2: 持久化说话人 → 库角色名映射, 供 Step5 读取建库/复用
+        # 空名 = 不入库 (决策 4), 完全不写入该 spk_id
+        if self.drama_dir is not None and self.speaker_name_edits:
+            spk_to_char = {}
+            for spk_id, edit in self.speaker_name_edits.items():
+                name = (edit.text() or '').strip()
+                if name:
+                    spk_to_char[spk_id] = name
+            try:
+                mapping_path = Path(f'{self.cache_folder}/spk_to_character.json')
+                mapping_path.write_text(json.dumps({
+                    'drama_dir': str(self.drama_dir),
+                    'mapping': spk_to_char,
+                }, ensure_ascii=False, indent=2), encoding='utf-8')
+                logger.info(f'[voice_library] 写入 spk→character 映射 {len(spk_to_char)} 条: {mapping_path}')
+            except Exception as e:
+                logger.warning(f'[voice_library] 写入 spk_to_character.json 失败: {e}')
+
+            # S3: 把每个有名字的 speaker 的当前固定音色回写 drama.json, 实现跨集音色一致
+            # 固定音色模式 (tts_type != clone) 才写; clone 模式音色无意义, 跳过
+            try:
+                from videotrans.util.voice_library import set_fixed_voice
+                # clone-voice tts_type 常量不一, 用启发式: 当前 speaker 的音色是 'clone' 就视为 clone 模式, 不写
+                for spk_id, name in spk_to_char.items():
+                    voice = self.speakers.get(spk_id) or ''
+                    if not voice or voice in self._AUTO_SKIP_VOICES:
+                        # 未选有效音色: 不清也不写, 避免误覆盖旧绑定
+                        continue
+                    set_fixed_voice(self.drama_dir, name, voice)
+                logger.info(f'[voice_library] 回写 fixed_voice 完成 ({len(spk_to_char)} 角色)')
+            except Exception as e:
+                logger.warning(f'[voice_library] 回写 fixed_voice 失败: {e}')
 
         self.accept()
