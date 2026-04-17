@@ -45,10 +45,11 @@ def _set_env():
     os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
     os.environ['QT_API'] = 'pyside6'
     os.environ['SOFT_NAME'] = 'pyvideotrans'
-    os.environ['MODELSCOPE_CACHE'] = ROOT_DIR + "/models"
-    os.environ['HF_HOME'] = ROOT_DIR + "/models"
-    os.environ['HF_HUB_CACHE'] = ROOT_DIR + "/models"
-    os.environ['HF_TOKEN_PATH'] = ROOT_DIR + "/models/hf_token.txt"
+    model_cache_dir = os.environ.get('PYVIDEOTRANS_MODEL_CACHE') or (ROOT_DIR + "/models")
+    os.environ['MODELSCOPE_CACHE'] = os.environ.get('MODELSCOPE_CACHE', model_cache_dir)
+    os.environ['HF_HOME'] = os.environ.get('HF_HOME', model_cache_dir)
+    os.environ['HF_HUB_CACHE'] = os.environ.get('HF_HUB_CACHE', model_cache_dir)
+    os.environ['HF_TOKEN_PATH'] = os.environ.get('HF_TOKEN_PATH', os.path.join(model_cache_dir, "hf_token.txt"))
     os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = 'true'
     os.environ['HF_HUB_DISABLE_PROGRESS_BARS'] = 'true'
     os.environ['HF_HUB_DOWNLOAD_TIMEOUT'] = "3600"
@@ -800,6 +801,25 @@ def __getattr__(name):
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 
+def _resolve_home_dir(configured_home: str) -> str:
+    candidates = [
+        os.environ.get("PYVIDEOTRANS_HOME"),
+        configured_home,
+        f"{ROOT_DIR}/output",
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            resolved = Path(candidate).expanduser()
+            resolved.mkdir(parents=True, exist_ok=True)
+            return resolved.as_posix()
+        except OSError:
+            continue
+    fallback = Path(ROOT_DIR) / "output"
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback.as_posix()
+
 _set_env()
 
 logger=_set_logs()
@@ -809,7 +829,11 @@ settings: AppSettings = AppSettings()
 params: AppParams = AppParams()
 
 HOME_DIR = settings.homedir  # 更新全局 HOME_DIR
-Path(HOME_DIR).mkdir(parents=True, exist_ok=True)
+
+HOME_DIR = _resolve_home_dir(settings.homedir)
+if settings.homedir != HOME_DIR:
+    settings.homedir = HOME_DIR
+    settings.save()
 
 defaulelang,_transobj=_init_language()
 
