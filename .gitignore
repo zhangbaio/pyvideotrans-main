@@ -16,7 +16,6 @@
 !build_win.bat
 !run-cuda.bat
 !update_ffmpeg.bat
-
 .agree.txt
 .git
 .github
@@ -31,6 +30,10 @@ test*.py
 ceshi*
 test*.m*
 test*.json
+
+# test*.py 通配 + git core.ignoreCase=true 会吃掉真实业务模块 (Test* 首字母大写), 显式保留
+!videotrans/util/TestSrtTrans.py
+!videotrans/util/TestSTT.py
 
 
 ffmpeg/ffmpeg.exe
