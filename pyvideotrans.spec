@@ -21,7 +21,7 @@ ROOT = Path(os.getcwd())
 
 # ---------- 需要整包收集的"难搞"依赖 ----------
 # 这些包大量用懒加载 / 动态 import / 非 .py 资源, 必须 collect_all
-COLLECT = [
+COLLECT_PKGS = [
     'torch', 'torchaudio',
     'transformers', 'tokenizers', 'safetensors', 'accelerate', 'peft',
     'faster_whisper', 'ctranslate2',
@@ -32,6 +32,7 @@ COLLECT = [
     'librosa', 'resampy', 'soxr', 'soundfile', 'audioread', 'pooch',
     'edge_tts', 'gtts',
     'piper', 'piper_tts',
+    'qwen_tts',
     'qdarkstyle',
     'dashscope', 'openai', 'google', 'anthropic',
     'whisper',
@@ -47,7 +48,7 @@ COLLECT = [
 datas = []
 binaries = []
 hiddenimports = []
-for pkg in COLLECT:
+for pkg in COLLECT_PKGS:
     try:
         d, b, h = collect_all(pkg)
         datas += d

@@ -54,8 +54,9 @@ videotrans/codec.json
 # 但保留我们项目默认/预设相关的内置文件
 !videotrans/presets/
 !videotrans/presets/*.json
-!videotrans/cfg.json
-!videotrans/params.json
+videotrans/cfg.json
+videotrans/params.json
+requirements.codex.txt
 videotrans/glossary.txt
 videotrans/newlang.txt
 
