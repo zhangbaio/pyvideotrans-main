@@ -46,11 +46,13 @@ ffmpeg/ffplay
 videotrans/translator/freechatgpt.py
 videotrans/ass.json
 videotrans/codec.json
-videotrans/cfg.json
-videotrans/params.json
+# videotrans/cfg.json 保留入库: 锁定默认 UI 语言=中文
+# videotrans/params.json 保留入库: 作为默认参数模板
 # 但保留我们项目默认/预设相关的内置文件
 !videotrans/presets/
 !videotrans/presets/*.json
+!videotrans/cfg.json
+!videotrans/params.json
 videotrans/glossary.txt
 videotrans/newlang.txt
 
