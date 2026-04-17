@@ -283,7 +283,7 @@ def openwin():
         }
 
 
-        if role == 'clone':
+        if role in ('clone', 'auto-match'):
             return
         raw_text=winobj.listen_btn.text()
         def feed(d):
@@ -503,8 +503,9 @@ def openwin():
             role_list = list(tools.get_fishtts_role().keys())
         elif type in [tts.F5_TTS,tts.INDEX_TTS,tts.SPARK_TTS,tts.VOXCPM_TTS,tts.DIA_TTS]:
             role_list = list(tools.get_f5tts_role().keys())
-        if "clone" in role_list:
-            role_list.remove('clone')
+        for special_role in ('clone', 'auto-match'):
+            if special_role in role_list:
+                role_list.remove(special_role)
         winobj.hecheng_role.addItems(role_list)
 
     # 合成语言变化，需要获取到角色

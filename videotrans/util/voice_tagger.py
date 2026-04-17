@@ -20,7 +20,7 @@ _FEMALE_PATTERNS = [
     r'女声|女生|小姐姐|姥姥|奶奶|淑女|少御|小美|公主|萝莉|大妈|大姐',
     r'灿灿|炀炀|梓梓|燃燃|甜美|甜宠|知性|温柔|亲切女|清新文艺女|鸡汤女|慈爱',
     r'童童|诚诚|懒小羊|(小|美)甜心|(小|美)女声',
-    r'\bfemale\b|\bwoman\b|\bgirl\b|_f_|-f-|(?i)xiao[a-z]*neural',
+    r'\bfemale\b|\bwoman\b|\bgirl\b|_f_|-f-|xiao[a-z]*neural',
     r'Vivian|Serena|Ono_anna|Sohee',
 ]
 _MALE_PATTERNS = [

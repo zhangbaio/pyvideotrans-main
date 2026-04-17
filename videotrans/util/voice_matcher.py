@@ -24,6 +24,7 @@ from videotrans.util.f0_gender import detect_gender_from_wav
 _ENGINE_KEY_MAP = {
     0:  'edgetts',       # EDGE_TTS
     1:  'qwen3local',    # QWEN3LOCAL_TTS
+    5:  'qwentts',       # QWEN_TTS (Bailian API)
     6:  'doubao2',       # DOUBAO2_TTS
     7:  'doubao0',       # DOUBAO_TTS (streaming)
     18: 'azure',         # AZURE_TTS
@@ -31,7 +32,7 @@ _ENGINE_KEY_MAP = {
     29: 'googletts',     # GOOGLE_TTS
 }
 
-_AUTO_SKIP_VOICES = frozenset({'No', 'clone', ''})
+_AUTO_SKIP_VOICES = frozenset({'No', 'clone', 'auto-match', ''})
 
 
 def _engine_key(tts_type: int) -> str:
@@ -56,6 +57,35 @@ def _load_fingerprint(engine_key: str) -> Dict[str, dict]:
 
 def _candidate_voices(all_voices: List[str]) -> List[str]:
     return [v for v in all_voices if v not in _AUTO_SKIP_VOICES]
+
+
+def _voice_gender(engine_key: str, voice_name: str) -> str:
+    """优先使用指纹文件中的 gender 标签，缺失时回退到基于名字的规则。"""
+    fp = _load_fingerprint(engine_key)
+    meta = fp.get(voice_name, {}) if fp else {}
+    gender = meta.get('gender') if isinstance(meta, dict) else None
+    if gender in ('f', 'm', 'any'):
+        return gender
+    return tag_voice(voice_name)['gender']
+
+
+def _tag_summary_by_engine(voices: List[str], engine_key: str) -> Dict[str, int]:
+    counter: Dict[str, int] = {'f': 0, 'm': 0, 'any': 0}
+    for v in voices:
+        g = _voice_gender(engine_key, v)
+        counter[g] = counter[g] + 1
+    return counter
+
+
+def _filter_by_gender_engine(voices: List[str], target_gender: str, engine_key: str) -> List[str]:
+    if not target_gender or target_gender == 'any' or not voices:
+        return list(voices)
+    out = []
+    for v in voices:
+        g = _voice_gender(engine_key, v)
+        if g == target_gender or g == 'any':
+            out.append(v)
+    return out if out else list(voices)
 
 
 def match_voices_to_speakers(
@@ -90,12 +120,12 @@ def match_voices_to_speakers(
 
     # --------- 层 1: 指纹库 embedding 匹配 ---------
     if _try_embedding_match(result, speaker_refs, pool, tts_type):
-        _fill_missing_with_gender(result, speaker_refs, pool, spk_ids)
+        _fill_missing_with_gender(result, speaker_refs, pool, spk_ids, tts_type)
         logger.info(f'[voice_matcher] 层1 指纹匹配: {result}')
         return result
 
     # --------- 层 2: F0 性别 + 名字标签 ---------
-    if _try_gender_match(result, speaker_refs, pool, spk_ids):
+    if _try_gender_match(result, speaker_refs, pool, spk_ids, tts_type):
         logger.info(f'[voice_matcher] 层2 性别匹配: {result}')
         return result
 
@@ -161,19 +191,21 @@ def _try_gender_match(
     speaker_refs: Dict[str, str],
     pool: List[str],
     spk_ids: List[str],
+    tts_type: int,
 ) -> bool:
     """F0 算每个源 spk 的性别 → voice_tagger 过滤池 → round-robin。
 
     池里女/男/未知三类分布需要有一定数量, 否则本层无意义, 返回 False。
     """
-    stats = tag_summary(pool)
+    engine_key = _engine_key(tts_type)
+    stats = _tag_summary_by_engine(pool, engine_key)
     # 池里至少要有一类性别 >=2 才值得过滤 (都是 'any' 或全同性别时层 2 无意义)
     if stats['f'] < 2 and stats['m'] < 2:
         logger.info(f'[voice_matcher] 音色池无性别区分 ({stats}), 跳层2')
         return False
 
-    female_pool = filter_by_gender(pool, 'f')
-    male_pool = filter_by_gender(pool, 'm')
+    female_pool = _filter_by_gender_engine(pool, 'f', engine_key)
+    male_pool = _filter_by_gender_engine(pool, 'm', engine_key)
     any_pool = list(pool)
 
     # 源 spk 性别缓存
@@ -224,11 +256,12 @@ def _fill_missing_with_gender(
     speaker_refs: Dict[str, str],
     pool: List[str],
     spk_ids: List[str],
+    tts_type: int,
 ) -> None:
     """层 1 遗漏的 spk (embedding 提取失败) 降级到层 2 策略补齐。"""
     missing = [s for s in spk_ids if s not in result]
     if missing:
-        _try_gender_match(result, {s: speaker_refs[s] for s in missing}, pool, missing)
+        _try_gender_match(result, {s: speaker_refs[s] for s in missing}, pool, missing, tts_type)
         # 层 2 若也没覆盖, 再走层 3
         still = [s for s in spk_ids if s not in result]
         if still:

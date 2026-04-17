@@ -15,7 +15,7 @@ from videotrans.configure.config import ROOT_DIR,tr,app_cfg,settings,params,TEMP
 from videotrans.recognition import run as run_recogn, Faster_Whisper_XXL, Whisper_CPP, \
     is_allow_lang as recogn_allow_lang, FASTER_WHISPER
 from videotrans.translator import run as run_trans, get_audio_code
-from videotrans.tts import run as run_tts, EDGE_TTS, AZURE_TTS, SUPPORT_CLONE
+from videotrans.tts import run as run_tts, EDGE_TTS, AZURE_TTS, SUPPORT_CLONE, QWEN_TTS
 from videotrans.task.simple_runnable_qt import run_in_threadpool
 from videotrans.util import tools, contants
 from ._base import BaseTask
@@ -1362,7 +1362,7 @@ class TransCreate(BaseTask):
                 voice = spk_voice_map.get(spk_list[i], voice_role)
             elif spk_ref_map and spk_list and i < len(spk_list):
                 # Step5 克隆模式：voice='clone' 触发下方 ref_wav 逻辑
-                voice = 'clone'
+                voice = 'auto-match' if self.cfg.tts_type == QWEN_TTS else 'clone'
             else:
                 voice = voice_role
 
@@ -1386,7 +1386,7 @@ class TransCreate(BaseTask):
                 "filename": f"{self.cfg.cache_folder}/dubb-{i}.wav"
             }
             # 克隆类型 TTS: 设置 ref_wav
-            if voice == 'clone' and self.cfg.tts_type in SUPPORT_CLONE:
+            if voice in ('clone', 'auto-match') and self.cfg.tts_type in SUPPORT_CLONE:
                 # Step 5 优先: 按 speaker 复用 extract_speaker_refs 提前提取好的参考音频
                 ref = None
                 if spk_ref_map and spk_list and i < len(spk_list):

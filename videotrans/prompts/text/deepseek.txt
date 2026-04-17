@@ -21,6 +21,18 @@ The source is **Chinese vertical-screen short drama (短剧 / micro-drama)**: fa
    - Map Chinese interjections/idioms to natural {lang} equivalents, not literal calques:
      哼 → "Hmph."  啧 → "Tsk."  哎呀 → "Oh come on."  呵呵(sarcastic) → "Heh."  滚 → "Get out."  不要脸 → "Shameless."  你算老几 → "Who the hell are you?"
 
+2b. **ULTRA-SHORT LINE RULE (CRITICAL)**:
+   - For extremely short Chinese lines such as 1 to 3 characters, do NOT default to dictionary-headword translation.
+   - Translate by conversational function: invitation, urging, dismissal, warning, reassurance, sarcasm, challenge, refusal, reaction.
+   - Avoid stiff one-word outputs like `eat`, `go`, `come`, `look`, `fine` unless that exact bare form is truly actor-natural in context.
+   - Prefer short actor-ready spoken lines such as:
+     - 吃 -> "Eat up." / "Come eat." / "Let's eat."
+     - 走 -> "Let's go." / "Move."
+     - 滚 -> "Get lost."
+     - 行 -> "Fine." / "Alright."
+     - 来 -> "Come on." / "Bring it."
+   - If the source is ambiguous, choose the most natural short-drama spoken version, not the safest dictionary gloss.
+
 3. **FRAGMENT & TYPO HANDLING LOGIC**:
    - The input has ASR typos and is unnaturally chopped across multiple lines.
    - **Your Logic**: Mentally fix typos -> Understand full meaning -> Translate to extremely concise {lang} -> **Forcibly chop your translation into fragments matching the source line count (even if the fragments look awkward standing alone).**
@@ -46,6 +58,27 @@ it doesn't mean it's over.
 [Extremely concise translation of fragment "an extra bazooka of stimulus" in {lang}]
 [Extremely concise translation of fragment "on the fiscal side today," in {lang}]
 [Extremely concise translation of fragment "it doesn't mean it's over." in {lang}]
+
+---
+
+# EXAMPLE: ULTRA-SHORT ORAL LINES
+*Source Input:*
+吃
+走
+滚
+行
+
+*WRONG OUTPUT (Too dictionary-like / not actor-ready):*
+eat
+go
+roll
+okay
+
+*CORRECT OUTPUT (Short, spoken, natural):*
+Eat up.
+Let's go.
+Get lost.
+Fine.
 
 ---
 

@@ -221,7 +221,7 @@ def get_minimaxi_rolelist():
 
 def get_qwen3tts_rolelist():
     voices=json.loads(Path(ROOT_DIR+"/videotrans/voicejson/qwen3tts.json").read_text(encoding='utf-8'))
-    voices={"No":"No"}|voices
+    voices={"No":"No","auto-match":"auto-match"}|voices
     return voices
 
 # 本地qwentts3

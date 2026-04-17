@@ -87,6 +87,7 @@ SUPPORT_CLONE=[
     DIA_TTS,
     CHATTERBOX_TTS,
     GPTSOVITS_TTS,
+    QWEN_TTS,
     QWEN3LOCAL_TTS,
     CAMB_TTS,
     OMNIVOICE_TTS,
@@ -354,7 +355,7 @@ def is_input_api(tts_type: int = None, return_str=False):
 
 
 def clone_tips(tts_type,role:str='No',recogn_type=9):
-    if tts_type in SUPPORT_CLONE and role=='clone':
+    if tts_type in SUPPORT_CLONE and role in ('clone', 'auto-match'):
         return tr('clone_dubb_tips1')+ ( tr('clone_dubb_tips2') if recogn_type <2 else '')
     return
 

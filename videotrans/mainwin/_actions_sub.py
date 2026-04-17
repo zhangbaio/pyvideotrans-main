@@ -554,7 +554,7 @@ class WinActionSub:
             "volume": volume,
             "pitch": pitch,
         }
-        if role == 'clone':
+        if role in ('clone', 'auto-match'):
             tools.show_error(
                 tr("The original sound clone cannot be auditioned"))
             return
@@ -584,7 +584,7 @@ class WinActionSub:
         _tip=tts.clone_tips(self.main.tts_type.currentIndex(),voice_role,self.main.recogn_type.currentIndex())
         if _tip:
             self.main.show_tips.setText(_tip)
-        if role == 'No' or voice_role == 'clone':
+        if role == 'No' or voice_role in ('clone', 'auto-match'):
             self.main.listen_btn.hide()
             return
         if self.main.app_mode in ['biaozhun']:
