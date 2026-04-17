@@ -1,6 +1,6 @@
 {
   "_name": "中→英 短剧 (Qwen3 本地克隆)",
-  "_remark": "源中文→目标英文；Qwen3-TTS 本地 (tts_type=1, MPS+batch 已优化)；faster-whisper；不嵌入字幕；保留背景音；silero VAD 需在 设置→VAD 里配置",
+  "_remark": "源中文→目标英文；Qwen3-TTS 本地 (tts_type=1, MPS+batch 已优化)；faster-whisper；不嵌入字幕；保留背景音。VAD 已调优 (threshold=0.35, min_speech=250ms, min_silence=500ms), 解决背景音乐场景下短句漏识别问题。",
   "source_language": "zh-cn",
   "target_language": "en",
   "translate_type": 0,
