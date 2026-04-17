@@ -1,0 +1,68 @@
+def openwin():
+    from PySide6 import QtWidgets
+    from videotrans.configure.config import ROOT_DIR,tr,app_cfg,settings,params,TEMP_DIR,logger,defaulelang,HOME_DIR
+    from videotrans.util import tools
+    from videotrans.util.ListenVoice import ListenVoice
+    def feed(d):
+        if d == "ok":
+            QtWidgets.QMessageBox.information(winobj, "Ok", "Test Ok")
+        else:
+            tools.show_error(d)
+        winobj.test.setText(tr('Test'))
+
+    def test():
+        url = winobj.api_url.text().strip()
+        if not url.startswith('http'):
+            url = 'http://' + url
+        params["fishtts_url"] = url
+        winobj.test.setText('测试中请稍等...')
+        from videotrans import tts
+        import time
+        wk = ListenVoice(parent=winobj, queue_tts=[{
+            "text": '你好啊我的朋友',
+            "role": getrole(),
+            "filename": TEMP_DIR + f"/{time.time()}-fishtts.wav",
+            "tts_type": tts.FISHTTS}],
+                         language="zh",
+                         tts_type=tts.FISHTTS)
+        wk.uito.connect(feed)
+        wk.start()
+
+    def getrole():
+        tmp = winobj.role.toPlainText().strip()
+        role = None
+        if not tmp:
+            return role
+
+        for it in tmp.split("\n"):
+            s = it.strip().split('#')
+            if len(s) != 2:
+                tools.show_error(tr("Each line must be split into two parts with #, in the format of audio name.wav#audio text content"))
+                return
+
+            role = s[0]
+        params['fishtts_role'] = tmp
+        return role
+
+    def save():
+        url = winobj.api_url.text().strip()
+        if not url.startswith('http'):
+            url = 'http://' + url
+        role = winobj.role.toPlainText().strip()
+
+        params["fishtts_url"] = url
+        params["fishtts_role"] = role
+
+        params.save()
+        tools.set_process(text='fishtts', type="refreshtts")
+        winobj.close()
+
+    from videotrans.component.set_form import FishTTSForm
+    winobj = FishTTSForm()
+    app_cfg.child_forms['fishtts'] = winobj
+    winobj.api_url.setText(params.get("fishtts_url",''))
+    winobj.role.setPlainText(params.get("fishtts_role",''))
+
+    winobj.save.clicked.connect(save)
+    winobj.test.clicked.connect(test)
+    winobj.show()

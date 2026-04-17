@@ -1,0 +1,60 @@
+======================================================
+pyVideoTrans 模型下载说明
+======================================================
+
+首次使用前, 按需下载以下模型到当前 models/ 目录。
+没用到的模型不必下载。
+
+目录结构 (HuggingFace 缓存格式):
+  models/
+    models--Systran--faster-whisper-large-v3/        (语音识别, 必装之一)
+    models--mobiuslabsgmbh--faster-whisper-large-v3-turbo/ (推荐, 更快)
+    models--Systran--faster-whisper-small/            (低配机器)
+    models--Qwen--Qwen3-TTS-12Hz-1.7B-Base/           (本地 TTS, 必装)
+    models--Qwen--Qwen3-TTS-12Hz-1.7B-CustomVoice/    (本地 TTS 克隆)
+    onnx/                                             (sherpa-onnx / 降噪模型)
+    hf_token.txt                                      (可选, HuggingFace token)
+
+------------------------------------------------------
+1. faster-whisper (语音识别)
+------------------------------------------------------
+推荐 large-v3-turbo (速度与质量平衡):
+  huggingface-cli download mobiuslabsgmbh/faster-whisper-large-v3-turbo \
+    --local-dir-use-symlinks False \
+    --cache-dir .
+
+或高质量 large-v3:
+  huggingface-cli download Systran/faster-whisper-large-v3 \
+    --local-dir-use-symlinks False --cache-dir .
+
+或低配机器 small:
+  huggingface-cli download Systran/faster-whisper-small \
+    --local-dir-use-symlinks False --cache-dir .
+
+国内镜像 (替代上面的命令):
+  set HF_ENDPOINT=https://hf-mirror.com
+  然后再执行 huggingface-cli download ...
+
+------------------------------------------------------
+2. Qwen3-TTS 本地克隆 (可选, 体积约 7GB)
+------------------------------------------------------
+  huggingface-cli download Qwen/Qwen3-TTS-12Hz-1.7B-Base \
+    --local-dir-use-symlinks False --cache-dir .
+  huggingface-cli download Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
+    --local-dir-use-symlinks False --cache-dir .
+
+不想用本地 TTS 可以不装, 改用 EdgeTTS / OpenAI TTS / 字节 TTS 等云端渠道。
+
+------------------------------------------------------
+3. HuggingFace Token (仅 pyannote 说话人分离 / 需登录的模型)
+------------------------------------------------------
+在 https://huggingface.co/settings/tokens 申请, 保存到:
+  models/hf_token.txt
+内容就是一行 token, 形如 hf_xxxxxxxxxxxx
+
+------------------------------------------------------
+备注
+------------------------------------------------------
+- 模型首次运行会自动检查, 缺哪个报哪个
+- 也可在界面内 "菜单 → 模型下载" 辅助下载
+- 模型目录完全独立于程序, 升级 exe 不会丢模型

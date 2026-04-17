@@ -1,0 +1,44 @@
+[
+  {
+    "text": "第一句,老张你听着。",
+    "filename": "/Users/zhangbiao/Documents/编程/ai/claude/video-translate/pyvideotrans-main/tools/_qwen3_fun_test/00_spk3.wav",
+    "ref_wav": "/Users/zhangbiao/Documents/编程/ai/claude/video-translate/pyvideotrans-main/output/马年逆袭：发小哭疯了-第2集-mp4/spk3_ref.wav",
+    "role": "clone"
+  },
+  {
+    "text": "第二句,赶紧把钱还我。",
+    "filename": "/Users/zhangbiao/Documents/编程/ai/claude/video-translate/pyvideotrans-main/tools/_qwen3_fun_test/01_spk3.wav",
+    "ref_wav": "/Users/zhangbiao/Documents/编程/ai/claude/video-translate/pyvideotrans-main/output/马年逆袭：发小哭疯了-第2集-mp4/spk3_ref.wav",
+    "role": "clone"
+  },
+  {
+    "text": "第三句,再拖我就报警。",
+    "filename": "/Users/zhangbiao/Documents/编程/ai/claude/video-translate/pyvideotrans-main/tools/_qwen3_fun_test/02_spk3.wav",
+    "ref_wav": "/Users/zhangbiao/Documents/编程/ai/claude/video-translate/pyvideotrans-main/output/马年逆袭：发小哭疯了-第2集-mp4/spk3_ref.wav",
+    "role": "clone"
+  },
+  {
+    "text": "第四句,别怪我不讲情面。",
+    "filename": "/Users/zhangbiao/Documents/编程/ai/claude/video-translate/pyvideotrans-main/tools/_qwen3_fun_test/03_spk3.wav",
+    "ref_wav": "/Users/zhangbiao/Documents/编程/ai/claude/video-translate/pyvideotrans-main/output/马年逆袭：发小哭疯了-第2集-mp4/spk3_ref.wav",
+    "role": "clone"
+  },
+  {
+    "text": "换人了,我是小李。",
+    "filename": "/Users/zhangbiao/Documents/编程/ai/claude/video-translate/pyvideotrans-main/tools/_qwen3_fun_test/04_spk1.wav",
+    "ref_wav": "/Users/zhangbiao/Documents/编程/ai/claude/video-translate/pyvideotrans-main/output/马年逆袭：发小哭疯了-第2集-mp4/spk1_ref.wav",
+    "role": "clone"
+  },
+  {
+    "text": "咱们改天再聊吧。",
+    "filename": "/Users/zhangbiao/Documents/编程/ai/claude/video-translate/pyvideotrans-main/tools/_qwen3_fun_test/05_spk1.wav",
+    "ref_wav": "/Users/zhangbiao/Documents/编程/ai/claude/video-translate/pyvideotrans-main/output/马年逆袭：发小哭疯了-第2集-mp4/spk1_ref.wav",
+    "role": "clone"
+  },
+  {
+    "text": "我就一句话,谢谢。",
+    "filename": "/Users/zhangbiao/Documents/编程/ai/claude/video-translate/pyvideotrans-main/tools/_qwen3_fun_test/06_spk2.wav",
+    "ref_wav": "/Users/zhangbiao/Documents/编程/ai/claude/video-translate/pyvideotrans-main/output/马年逆袭：发小哭疯了-第2集-mp4/spk2_ref.wav",
+    "role": "clone"
+  }
+]

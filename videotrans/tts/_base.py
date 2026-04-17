@@ -1,0 +1,272 @@
+import asyncio
+import copy
+import inspect
+import re
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Union
+
+from tenacity import RetryError
+from videotrans.configure._base import BaseCon
+from videotrans.configure._except import StopRetry
+from videotrans.configure.config import tr, settings, params, app_cfg, logger, TEMP_DIR
+
+from videotrans.util import tools
+
+"""
+edge-tts 当前线程中async异步任务
+其他渠道多线程执行
+self.error中可能是异常对象或字符串
+
+run->exec->[local_mutli]->item_task
+
+"""
+
+
+@dataclass
+class BaseTTS(BaseCon):
+    # 配音渠道
+    tts_type: int = 0
+    # 存放字幕信息队列
+    queue_tts: List[Dict[str, Any]] = field(default_factory=list, repr=False)
+    # queue_tts 数量
+    len: int = field(init=False)
+    # 语言代码
+    language: Optional[str] = None
+    # 唯一uid
+    uuid: Optional[str] = None
+    # 是否立即播放
+    play: bool = False
+    # 是否测试
+    is_test: bool = False
+
+    # 音量 音速 音调，默认 edge-tts格式
+    volume: str = field(default='+0%', init=False)
+    rate: str = field(default='+0%', init=False)
+    pitch: str = field(default='+0Hz', init=False)
+
+    # 是否完成
+    has_done: int = field(default=0, init=False)
+
+    # 每次任务后暂停时间
+    wait_sec: float = float(settings.get('dubbing_wait', 0))
+    # 并发线程数量
+    dub_nums: int = int(float(settings.get('dubbing_thread', 1)))
+    # 存放消息
+    error: Optional[Any] = None
+    # 配音api地址
+    api_url: str = field(default='', init=False)
+    # 启用CUDA，仅 qwen3-tts-local 游戏哦啊
+    is_cuda:bool=False
+
+    def __post_init__(self):
+        super().__post_init__()
+        if not self.queue_tts:
+            raise RuntimeError(tr("No subtitles required"))
+
+        self.queue_tts = copy.deepcopy(self.queue_tts)
+        self.len = len(self.queue_tts)
+        self._cleantts()
+
+    def _cleantts(self):
+        normalizer = None
+        if settings.get('normal_text'):
+            if self.language[:2] == 'zh':
+                from videotrans.util.cn_tn import TextNorm
+                normalizer = TextNorm(to_banjiao=True)
+            elif self.language[:2] == 'en':
+                from videotrans.util.en_tn import EnglishNormalizer
+                normalizer = EnglishNormalizer()
+        
+        for i, it in enumerate(self.queue_tts):
+            if it['text'].strip() and normalizer:
+                try:
+                    self.queue_tts[i]['text'] = normalizer(it['text'])
+                except:
+                    pass
+
+        if "volume" in self.queue_tts[0]:
+            self.volume = self.queue_tts[0]['volume']
+        if "rate" in self.queue_tts[0]:
+            self.rate = self.queue_tts[0]['rate']
+        if "pitch" in self.queue_tts[0]:
+            self.pitch = self.queue_tts[0]['pitch']
+
+        if re.match(r'^\d+(\.\d+)?%$', self.rate):
+            self.rate = f'+{self.rate}'
+        if re.match(r'^\d+(\.\d+)?%$', self.volume):
+            self.volume = f'+{self.volume}'
+        if re.match(r'^\d+(\.\d+)?Hz$', self.pitch, re.I):
+            self.pitch = f'+{self.pitch}'
+
+        if not re.match(r'^[+-]\d+(\.\d+)?%$', self.rate):
+            self.rate = '+0%'
+        if not re.match(r'^[+-]\d+(\.\d+)?%$', self.volume):
+            self.volume = '+0%'
+        if not re.match(r'^[+-]\d+(\.\d+)?Hz$', self.pitch, re.I):
+            self.pitch = '+0Hz'
+        self.pitch = self.pitch.replace('%', '')
+
+    # 入口 调用子类 _exec() 然后创建线程池调用 _item_task 或直接在 _exec 中实现逻辑
+    # 若捕获到异常，则直接抛出  出错时发送停止信号
+    # run->exec->_local_mul_thread->item_task
+    # run->exec->item_task
+    def run(self) -> None:
+        if self._exit(): return
+        Path(TEMP_DIR).mkdir(parents=True, exist_ok=True)
+        self._signal(text="")
+        _st = time.time()
+        if hasattr(self, '_download'):
+            self._download()
+        loop = None
+        try:
+            # 检查 self._exec 是不是一个异步函数 (coroutine)
+            if inspect.iscoroutinefunction(self._exec):
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(self._exec())
+                else:
+                    loop.run_until_complete(self._exec())
+            else:
+                # 可能调用多线程
+                self._exec()
+        except RetryError as e:
+            raise e.last_attempt.exception()
+        except RuntimeError as e:
+            logger.warning(f'TTS 线程运行时发生错误: {e}')
+            if 'Event loop' in str(e):
+                logger.warning("捕获到 'Event loop is closed' 错误，这通常是关闭时序问题。")
+            else:
+                raise
+        except Exception:
+            raise
+        finally:
+            # 只有当 self._exec 是异步函数时，才需要处理事件循环
+            if inspect.iscoroutinefunction(self._exec) and loop and not loop.is_closed():
+                logger.debug("开始执行事件循环的关闭流程...")
+                try:
+                    # 1: 取消所有剩余的任务
+                    tasks = asyncio.all_tasks(loop=loop)
+                    for task in tasks:
+                        task.cancel()
+
+                    # 2: 聚合所有任务，等待它们完成取消
+                    group = asyncio.gather(*tasks, return_exceptions=True)
+                    loop.run_until_complete(group)
+                    import gc
+                    gc.collect()
+                    loop.run_until_complete(asyncio.sleep(0))
+                    # 3: 关闭异步生成器
+                    loop.run_until_complete(loop.shutdown_asyncgens())
+                except Exception as e:
+                    logger.exception(e, exc_info=True)
+                finally:
+                    # 4: 最终关闭事件循环
+                    logger.debug("事件循环已关闭。")
+                    loop.close()
+            logger.debug(f'[字幕配音]渠道{self.tts_type}:共耗时:{int(time.time() - _st)}s')
+
+        # 试听或测试时播放
+        if self.play:
+            if tools.vail_file(self.queue_tts[0]['filename']):
+                tools.pygameaudio(self.queue_tts[0]['filename'])
+                return
+            if isinstance(self.error, RetryError):
+                raise self.error.last_attempt.exception()
+            raise self.error if isinstance(self.error, Exception) else RuntimeError(str(self.error))
+
+        # 记录成功数量
+        succeed_nums = 0
+        for it in self.queue_tts:
+            if not it['text'].strip() or tools.vail_file(it['filename']):
+                succeed_nums += 1
+        # 只有全部配音都失败，才视为失败
+        if succeed_nums < 1:
+            if app_cfg.exit_soft: return
+            
+            if isinstance(self.error, Exception):
+                raise self.error if not isinstance(self.error,RetryError) else self.error.last_attempt.exception()
+            
+            raise RuntimeError((tr("Dubbing failed")) + str(self.error))
+
+        self._signal(text=tr("Dubbing succeeded {}，failed {}", succeed_nums, len(self.queue_tts) - succeed_nums))
+
+    # 用于除  edge-tts 之外的渠道，在此进行单或多线程。调用 _item_task
+    # exec->_local_mul_thread->item_task
+    def _local_mul_thread(self) -> None:
+        if self._exit(): return
+
+        # 单个字幕行，无需多线程
+        if len(self.queue_tts) == 1 or self.dub_nums == 1:
+            for k, item in enumerate(self.queue_tts):
+                if not item.get('text'):
+                    continue
+                try:
+                    self._item_task(item,k)
+                except StopRetry:
+                    # 属于致命错误，无需继续下个字幕配音,例如 api地址错误 api_name 不存在等
+                    raise
+                except RetryError as e:
+                    self.error = e.last_attempt.exception()
+                except Exception as e:
+                    self.error = e
+                finally:
+                    self._signal(text=f'TTS[{k + 1}/{self.len}]')
+                time.sleep(self.wait_sec)
+            return
+
+        all_task = []
+        pool = ThreadPoolExecutor(max_workers=self.dub_nums)
+        try:
+            for k, item in enumerate(self.queue_tts):
+                if not item.get('text'):
+                    continue
+                future = pool.submit(self._item_task, item,k)
+                all_task.append(future)
+
+            completed_tasks = 0
+            for task in as_completed(all_task):
+                try:
+                    task.result()
+                    # 属于致命错误，无需等待其他任务，肯定全部失败,例如 api地址错误 api_name 不存在等
+                except StopRetry:
+                    # wait=False 表示主线程不等待正在运行的线程结束，直接往下走
+                    # 这会将还在排队但没开始运行的任务全部取消
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    raise
+                except Exception as e:
+                    self.error = e
+                finally:
+                    completed_tasks += 1
+                    self._signal(text=f"TTS: [{completed_tasks}/{self.len}] ...")
+        except StopRetry:
+            raise
+        finally:
+            # 确保线程池最终被关闭
+            # 只能取消排队的任务，并让主线程不再等待。
+            pool.shutdown(wait=False)
+
+    # 实际业务逻辑 子类实现 在此创建线程池，或单线程时直接创建逻辑
+    def _exec(self) -> None:
+        pass
+
+    # 每条字幕任务，由线程池调用 data_item 是 queue_tts 中每个元素
+    def _item_task(self, data_item: Union[Dict, List, None],idx:int=-1) -> Union[bool, None]:
+        pass
+
+    # 返回空白的16000采样率音频
+    def _padforaudio(self, duration=1500):
+        from pydub import AudioSegment
+        silent_segment = AudioSegment.silent(duration=duration)
+        silent_segment.set_channels(1).set_frame_rate(16000)
+        return silent_segment
+
+    def _exit(self):
+        if app_cfg.exit_soft or (self.uuid and self.uuid in app_cfg.stoped_uuid_set):
+            return True
+        return False
