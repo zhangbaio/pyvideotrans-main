@@ -566,17 +566,66 @@ class SpeakerAssignmentDialog(QDialog):
         return [v for v in self.all_voices if v not in self._AUTO_SKIP_VOICES]
 
     def _auto_assign_speaker_voices(self, force: bool = False):
-        """轮询给每个说话人分配一个固定音色。
+        """给每个说话人分配一个固定音色。
 
         force=False (默认): 只对当前为 None 的 speaker 赋值, 不覆盖用户手工选择
         force=True: 全部重新分配, 用于"一键自动分配"按钮
+
+        策略 (videotrans.util.voice_matcher 三层降级):
+          1. 指纹库存在 → 源 spk embedding vs 音色 embedding 余弦相似
+          2. 名字可标签 → F0 性别 + voice_tagger 过滤池, round-robin
+          3. 裸 round-robin (兜底)
+        任意一层异常都自动降到下一层, 不阻断 UI。
         """
         pool = self._candidate_voices()
         if not pool:
             return
-        for idx, spk_id in enumerate(self.speakers.keys()):
-            if force or self.speakers.get(spk_id) is None:
-                self.speakers[spk_id] = pool[idx % len(pool)]
+
+        # 收集 spkN_ref.wav (来自 extract_speaker_refs 的产物)
+        speaker_refs: dict = {}
+        try:
+            refs_json = Path(f'{self.cache_folder}/speaker_refs.json') if self.cache_folder else None
+            if refs_json and refs_json.exists():
+                _r = json.loads(refs_json.read_text(encoding='utf-8'))
+                # 兼容两种结构: {spk: path} 或 {spk: {ref: path, ...}}
+                for k, v in (_r or {}).items():
+                    if isinstance(v, str):
+                        speaker_refs[k] = v
+                    elif isinstance(v, dict) and v.get('ref'):
+                        speaker_refs[k] = v['ref']
+        except Exception as e:
+            logger.warning(f'[voice_matcher] 读 speaker_refs.json 失败: {e}')
+
+        # existing: force=False 时把已有值传进去保护, force=True 时全清空重分
+        existing = {}
+        if not force:
+            existing = {sid: v for sid, v in self.speakers.items() if v}
+
+        # 若没有 spkN_ref.wav (diariz 未跑 / 单人场景), 退化到纯 round-robin
+        if not speaker_refs:
+            for idx, spk_id in enumerate(self.speakers.keys()):
+                if force or self.speakers.get(spk_id) is None:
+                    self.speakers[spk_id] = pool[idx % len(pool)]
+            return
+
+        try:
+            from videotrans.util.voice_matcher import match_voices_to_speakers
+            # speaker_refs 只保留当前对话框 self.speakers 里存在的 spk
+            filtered_refs = {k: v for k, v in speaker_refs.items() if k in self.speakers}
+            result = match_voices_to_speakers(
+                speaker_refs=filtered_refs,
+                all_voices=list(self.all_voices or []),
+                tts_type=int(self.tts_type or 0),
+                existing=existing,
+            )
+            for spk_id in self.speakers.keys():
+                if spk_id in result:
+                    self.speakers[spk_id] = result[spk_id]
+        except Exception as e:
+            logger.warning(f'[voice_matcher] 匹配失败, 退回 round-robin: {e}')
+            for idx, spk_id in enumerate(self.speakers.keys()):
+                if force or self.speakers.get(spk_id) is None:
+                    self.speakers[spk_id] = pool[idx % len(pool)]
 
     def _on_character_selected(self, spk_id, character_name, name_edit):
         """S2: 用户在"已有角色"下拉选了一项 → 回填输入框 + 查 drama.json 的 fixed_voice 覆盖当前行音色。
