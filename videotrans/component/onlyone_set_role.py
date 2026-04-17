@@ -44,6 +44,7 @@ class SpeakerAssignmentDialog(QDialog):
         self.library_characters = []  # [{name, total_sec, episodes}, ...]
         self.speaker_name_edits = {}
         self.speaker_name_combos = {}
+        self.auto_assigned_speakers = set()
         if self.video_path:
             try:
                 from videotrans.util.voice_library import get_drama_dir, list_characters
@@ -347,6 +348,10 @@ class SpeakerAssignmentDialog(QDialog):
             
             # 7. 添加底部按钮
             self._setup_bottom_buttons()
+            self._update_role_column()
+            for check, spk_id in self.speaker_checks.items():
+                label_color = "#66dd99" if spk_id in self.auto_assigned_speakers and self.speakers.get(spk_id) else "#ffcccc"
+                self.speaker_labels[check].setStyleSheet(f"color: {label_color};")
             
             # 8. 显示表格
             self.loading_widget.setVisible(False)
@@ -427,8 +432,9 @@ class SpeakerAssignmentDialog(QDialog):
             self.right_layout.insertWidget(0, speaker_widget)
         
         # 底部按钮
+        assignable_voices = ['No'] + self._candidate_voices()
         self.subtitle_combo = QComboBox()
-        self.subtitle_combo.addItems(self.all_voices)
+        self.subtitle_combo.addItems(assignable_voices)
         self.bottom_button_container_layout.addWidget(self.subtitle_combo)
 
         assign_button = QPushButton(tr("Assign roles to selected subtitles"))
@@ -490,7 +496,8 @@ class SpeakerAssignmentDialog(QDialog):
             initial_voice = self.speakers.get(spk_id) or ''
             label = QLabel(initial_voice)
             label.setMinimumWidth(80)
-            label.setStyleSheet("color: #ffcccc;")
+            label_color = "#66dd99" if spk_id in self.auto_assigned_speakers and initial_voice else "#ffcccc"
+            label.setStyleSheet(f"color: {label_color};")
 
             col = 0
             grid_layout.addWidget(check, i, col); col += 1
@@ -533,8 +540,9 @@ class SpeakerAssignmentDialog(QDialog):
         layout.addLayout(grid_layout)
 
         bottom_row = QHBoxLayout()
+        assignable_voices = ['No'] + self._candidate_voices()
         self.speaker_combo = QComboBox()
-        self.speaker_combo.addItems(self.all_voices)
+        self.speaker_combo.addItems(assignable_voices)
         
         lbl = QLabel(tr('Dubbing role'))
         lbl.setStyleSheet("color: #dddddd;")
@@ -561,7 +569,7 @@ class SpeakerAssignmentDialog(QDialog):
         return group
 
     # ---------- 自动分配 ----------
-    _AUTO_SKIP_VOICES = frozenset({'No', 'clone', ''})
+    _AUTO_SKIP_VOICES = frozenset({'No', 'clone', 'auto-match', ''})
 
     def _candidate_voices(self):
         """从 all_voices 里剔掉不适合自动分配的条目 (No / clone / 空)"""
@@ -608,6 +616,7 @@ class SpeakerAssignmentDialog(QDialog):
             for idx, spk_id in enumerate(self.speakers.keys()):
                 if force or self.speakers.get(spk_id) is None:
                     self.speakers[spk_id] = pool[idx % len(pool)]
+                    self.auto_assigned_speakers.add(spk_id)
             return
 
         try:
@@ -623,11 +632,13 @@ class SpeakerAssignmentDialog(QDialog):
             for spk_id in self.speakers.keys():
                 if spk_id in result:
                     self.speakers[spk_id] = result[spk_id]
+                    self.auto_assigned_speakers.add(spk_id)
         except Exception as e:
             logger.warning(f'[voice_matcher] 匹配失败, 退回 round-robin: {e}')
             for idx, spk_id in enumerate(self.speakers.keys()):
                 if force or self.speakers.get(spk_id) is None:
                     self.speakers[spk_id] = pool[idx % len(pool)]
+                    self.auto_assigned_speakers.add(spk_id)
 
     def _on_character_selected(self, spk_id, character_name, name_edit):
         """S2: 用户在"已有角色"下拉选了一项 → 回填输入框 + 查 drama.json 的 fixed_voice 覆盖当前行音色。
@@ -655,10 +666,12 @@ class SpeakerAssignmentDialog(QDialog):
             logger.info(f'[voice_library] 角色 "{character_name}" 绑定音色 {bound_voice} 不在当前池中, 忽略')
             return
         self.speakers[spk_id] = bound_voice
+        self.auto_assigned_speakers.discard(spk_id)
         # 刷新上方该 speaker 行的 label + 表格 Role 列
         for check, sid in self.speaker_checks.items():
             if sid == spk_id:
                 self.speaker_labels[check].setText(bound_voice)
+                self.speaker_labels[check].setStyleSheet("color: #ffcccc;")
                 break
         self._update_role_column()
 
@@ -668,6 +681,8 @@ class SpeakerAssignmentDialog(QDialog):
         # 刷新上方 speaker_labels 显示
         for check, spk_id in self.speaker_checks.items():
             self.speaker_labels[check].setText(self.speakers.get(spk_id) or '')
+            label_color = "#66dd99" if spk_id in self.auto_assigned_speakers and self.speakers.get(spk_id) else "#ffcccc"
+            self.speaker_labels[check].setStyleSheet(f"color: {label_color};")
         # 刷新表格"配音角色"列
         self._update_role_column()
 
@@ -679,7 +694,9 @@ class SpeakerAssignmentDialog(QDialog):
         for check, spk_id in self.speaker_checks.items():
             if check.isChecked():
                 self.speakers[spk_id] = role_value
+                self.auto_assigned_speakers.discard(spk_id)
                 self.speaker_labels[check].setText(selected_role if role_value else "")
+                self.speaker_labels[check].setStyleSheet("color: #ffcccc;")
                 check.setChecked(False)
         
         # 更新表格中的 Role 列
@@ -696,6 +713,14 @@ class SpeakerAssignmentDialog(QDialog):
             item = self.table.item(row, 3)
             if item:
                 item.setText(role if role else tr('Default Role'))
+                if data.get('role'):
+                    item.setForeground(QColor("#ffcccc"))
+                elif role and data.get('spk') in self.auto_assigned_speakers:
+                    item.setForeground(QColor("#66dd99"))
+                elif role:
+                    item.setForeground(QColor("#ffcccc"))
+                else:
+                    item.setForeground(QColor("#ff4d4d"))
 
     def assign_subtitle_roles(self):
         """分配角色给选中的行"""
