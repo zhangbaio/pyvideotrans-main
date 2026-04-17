@@ -61,6 +61,12 @@ class SpeakerAssignmentDialog(QDialog):
 
         self.all_voices = all_voices or []
 
+        # 自动为每个说话人轮询分配一个固定音色 (用户仍可在 UI 里手动改)
+        # 设计 (Linus): 只有 (a) 检测到多说话人 (b) 音色池非空 时才触发
+        # 不偷偷开 diariz, 不替换用户已手动分配的值
+        if self.speakers:
+            self._auto_assign_speaker_voices()
+
         self.setWindowTitle(tr("zidonghebingmiaohou"))
         self.setWindowIcon(QIcon(f"{ROOT_DIR}/videotrans/styles/icon.ico"))
         self.setMinimumWidth(int(parent.width*0.95))
@@ -425,8 +431,10 @@ class SpeakerAssignmentDialog(QDialog):
 
             check = QCheckBox(f'{tr("Speaker")}{spk_id}')
             check.setStyleSheet("color: #dddddd;")
-            
-            label = QLabel("")
+
+            # 显示自动分配后的初始音色 (若有)
+            initial_voice = self.speakers.get(spk_id) or ''
+            label = QLabel(initial_voice)
             label.setMinimumWidth(80)
             label.setStyleSheet("color: #ffcccc;")
 
@@ -452,10 +460,48 @@ class SpeakerAssignmentDialog(QDialog):
         assign_button.clicked.connect(self.assign_speaker_roles)
         assign_button.setMinimumSize(QSize(120, 26))
         bottom_row.addWidget(assign_button)
+
+        # 一键重新自动分配 (覆盖当前所有说话人)
+        reassign_button = QPushButton(tr("Auto reassign"))
+        reassign_button.setCursor(Qt.PointingHandCursor)
+        reassign_button.clicked.connect(self._on_reassign_clicked)
+        reassign_button.setMinimumSize(QSize(120, 26))
+        reassign_button.setToolTip(tr("Reassign each speaker a distinct voice automatically"))
+        bottom_row.addWidget(reassign_button)
+
         bottom_row.addStretch()
 
         layout.addLayout(bottom_row)
         return group
+
+    # ---------- 自动分配 ----------
+    _AUTO_SKIP_VOICES = frozenset({'No', 'clone', ''})
+
+    def _candidate_voices(self):
+        """从 all_voices 里剔掉不适合自动分配的条目 (No / clone / 空)"""
+        return [v for v in self.all_voices if v not in self._AUTO_SKIP_VOICES]
+
+    def _auto_assign_speaker_voices(self, force: bool = False):
+        """轮询给每个说话人分配一个固定音色。
+
+        force=False (默认): 只对当前为 None 的 speaker 赋值, 不覆盖用户手工选择
+        force=True: 全部重新分配, 用于"一键自动分配"按钮
+        """
+        pool = self._candidate_voices()
+        if not pool:
+            return
+        for idx, spk_id in enumerate(self.speakers.keys()):
+            if force or self.speakers.get(spk_id) is None:
+                self.speakers[spk_id] = pool[idx % len(pool)]
+
+    def _on_reassign_clicked(self):
+        """一键重新自动分配"""
+        self._auto_assign_speaker_voices(force=True)
+        # 刷新上方 speaker_labels 显示
+        for check, spk_id in self.speaker_checks.items():
+            self.speaker_labels[check].setText(self.speakers.get(spk_id) or '')
+        # 刷新表格"配音角色"列
+        self._update_role_column()
 
     def assign_speaker_roles(self):
         """分配角色给说话人"""
