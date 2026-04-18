@@ -2,6 +2,7 @@ import copy
 import json
 import re
 import platform
+import shutil
 import subprocess
 import sys
 import time
@@ -10,6 +11,38 @@ from typing import Union,Tuple,List,Dict
 
 from videotrans.configure.config import ROOT_DIR,tr,app_cfg,settings,params,TEMP_DIR,logger,defaulelang,HOME_DIR
 from videotrans.util import contants
+
+
+def _resolve_media_binary(binary_name: str) -> str:
+    """
+    Resolve ffmpeg/ffprobe from common runtime locations before falling back to PATH.
+    """
+    suffix = ".exe" if sys.platform == "win32" else ""
+    executable_name = f"{binary_name}{suffix}"
+
+    candidate_paths = [
+        Path(ROOT_DIR) / executable_name,
+        Path(ROOT_DIR) / "ffmpeg" / executable_name,
+    ]
+
+    if getattr(sys, "frozen", False):
+        candidate_paths.extend([
+            Path(ROOT_DIR) / "_internal" / executable_name,
+            Path(ROOT_DIR) / "_internal" / "ffmpeg" / executable_name,
+        ])
+
+    for candidate in candidate_paths:
+        if candidate.exists():
+            return candidate.as_posix()
+
+    resolved = shutil.which(binary_name) or shutil.which(executable_name)
+    if resolved:
+        return resolved
+
+    raise FileNotFoundError(
+        f"Missing required binary: {executable_name}. "
+        f"Expected it in {Path(ROOT_DIR, 'ffmpeg').as_posix()} or in your PATH."
+    )
 
 
 def extract_concise_error(stderr_text: str, max_lines=3, max_length=250) -> str:
@@ -222,7 +255,8 @@ def runffmpeg(arg, *, noextname=None, uuid=None, force_cpu=True,cmd_dir=None):
             final_args = _build_hw_command(arg, app_cfg.video_codec)
 
 
-    cmd = ['ffmpeg', "-hide_banner", "-ignore_unknown",'-threads','0']
+    ffmpeg_bin = _resolve_media_binary('ffmpeg')
+    cmd = [ffmpeg_bin, "-hide_banner", "-ignore_unknown",'-threads','0']
     if "-y" not in final_args:
         cmd.append("-y")
     cmd.extend(final_args)
@@ -382,7 +416,7 @@ def get_video_codec(compat=None) -> str:
         timestamp = int(time.time() * 1000)
         output_file = temp_dir / f"test_{encoder_to_test}_{timestamp}.mp4"
         command = [
-            "ffmpeg", "-y", "-hide_banner",
+            _resolve_media_binary('ffmpeg'), "-y", "-hide_banner",
             "-t", "1", "-i", str(test_input_file),
             "-c:v", encoder_to_test, "-f", "mp4", str(output_file)
         ]
@@ -473,7 +507,8 @@ def _run_ffprobe_internal(cmd: list[str]) -> str:
     if Path(cmd[-1]).is_file():
         cmd[-1] = Path(cmd[-1]).as_posix()
 
-    command = ['ffprobe'] + [str(arg) for arg in cmd]
+    ffprobe_bin = _resolve_media_binary('ffprobe')
+    command = [ffprobe_bin] + [str(arg) for arg in cmd]
     creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
     # print(command)
     try:
@@ -488,7 +523,7 @@ def _run_ffprobe_internal(cmd: list[str]) -> str:
         )
         return p.stdout.strip()
     except FileNotFoundError as e:
-        msg = f"Command not found: ffmpeg. Ensure FFmpeg is installed and in your PATH."
+        msg = str(e)
         logger.warning(msg)
         raise _FFprobeInternalError(msg) from e
     except subprocess.CalledProcessError as e:
@@ -824,6 +859,67 @@ def precise_speed_up_audio(*, file_path=None, out=None, target_duration_ms=None)
 
 
 # 从音频中截取一个片段
+def precise_speed_up_audio(*, file_path=None, out=None, target_duration_ms=None):
+    from pydub import AudioSegment
+
+    input_path = Path(file_path)
+    if not input_path.exists():
+        raise FileNotFoundError(file_path)
+
+    ext = input_path.suffix.lower().lstrip('.')
+    if not ext:
+        ext = 'wav'
+
+    final_out = Path(out) if out else input_path
+    out_ext = final_out.suffix.lower().lstrip('.') if final_out.suffix else ext
+    codecs = {"m4a": "aac", "mp3": "libmp3lame", "wav": "pcm_s16le"}
+    audio = AudioSegment.from_file(input_path.as_posix(), format='mp4' if ext == 'm4a' else ext)
+    current_duration_ms = len(audio)
+
+    if current_duration_ms <= 0 or not target_duration_ms or target_duration_ms <= 0:
+        return False
+
+    atempo_list = []
+    speed_factor = current_duration_ms / target_duration_ms
+    while speed_factor > 2.0:
+        atempo_list.append("atempo=2.0")
+        speed_factor /= 2.0
+    while speed_factor < 0.5:
+        atempo_list.append("atempo=0.5")
+        speed_factor /= 0.5
+    atempo_list.append(f"atempo={speed_factor}")
+
+    filter_str = ",".join(atempo_list)
+    rubberband_filter_str = f"rubberband=tempo={current_duration_ms / target_duration_ms}"
+
+    temp_out = final_out.with_name(f"{final_out.stem}.speedtmp{final_out.suffix or input_path.suffix}")
+    temp_out.parent.mkdir(parents=True, exist_ok=True)
+    temp_out.unlink(missing_ok=True)
+
+    cmd = [
+        '-y',
+        '-i',
+        input_path.as_posix(),
+        '-filter:a',
+        rubberband_filter_str,
+        '-t', f"{target_duration_ms/1000.0}",
+        '-ar', "48000",
+        '-ac', "2",
+        '-c:a', codecs.get(out_ext, 'pcm_s16le'),
+        temp_out.as_posix()
+    ]
+    try:
+        runffmpeg(cmd, force_cpu=True)
+    except Exception:
+        cmd[4] = filter_str
+        runffmpeg(cmd, force_cpu=True)
+
+    if not temp_out.exists():
+        raise RuntimeError(f"speed-up output missing: {temp_out}")
+
+    shutil.move(temp_out.as_posix(), final_out.as_posix())
+    return True
+
 def cut_from_audio(*, ss, to, audio_file, out_file):
     from . import help_srt
     from pathlib import Path

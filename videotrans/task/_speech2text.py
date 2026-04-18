@@ -312,8 +312,28 @@ class SpeechToText(BaseTask):
                     if i < speakers_len and speakers[i]:
                         it['text'] = f'[{speakers[i]}]{it["text"]}'
 
+        self.task_finished_at = time.time()
         self._save_srt_target(self.source_srt_list, self.cfg.target_sub)
-        self._signal(text=f"{self.cfg.name}", type='succeed')
+        self._finalize_task_logging(
+            status="succeed",
+            extra={
+                "target_sub": self.cfg.target_sub,
+                "detect_language": self.cfg.detect_language,
+                "recogn_type": self.cfg.recogn_type,
+                "model_name": self.cfg.model_name,
+            }
+        )
+        payload = self._task_summary_payload(
+            status="succeed",
+            extra={
+                "target_sub": self.cfg.target_sub,
+                "detect_language": self.cfg.detect_language,
+                "recogn_type": self.cfg.recogn_type,
+                "model_name": self.cfg.model_name,
+            }
+        )
+        payload["name"] = self.cfg.name
+        self._signal(text=json.dumps(payload, ensure_ascii=False), type='succeed')
         if self.out_format == 'txt':
             self.cfg.target_sub = self.cfg.target_sub[:-3] + 'txt'
             Path(self.cfg.target_sub).write_text("\r\n".join([it["text"] for it in self.source_srt_list]),encoding='utf-8')

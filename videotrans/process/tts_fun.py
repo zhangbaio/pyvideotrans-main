@@ -38,6 +38,27 @@ def qwen3tts_fun(
 
     
     queue_tts=json.loads(Path(queue_tts_file).read_text(encoding='utf-8'))
+    overall_started = time.perf_counter()
+    stats = {
+        "rate_calls": 0,
+        "rate_sec": 0.0,
+        "trim_calls": 0,
+        "trim_sec": 0.0,
+        "sanitize_calls": 0,
+        "sanitize_sec": 0.0,
+        "fallback_calls": 0,
+        "fallback_sec": 0.0,
+        "custom_items": 0,
+        "custom_synth_sec": 0.0,
+        "clone_batches": 0,
+        "clone_items": 0,
+        "clone_synth_sec": 0.0,
+        "prompt_cache_hits": 0,
+        "prompt_build_sec": 0.0,
+    }
+
+    def _log_timing(message):
+        logger.info(f"[qwen3tts][timing] {message}")
     
     atten=None
     if is_cuda:
@@ -56,28 +77,33 @@ def qwen3tts_fun(
     else:
         device_map = 'cpu'
         dtype=torch.float32
+    _log_timing(f"device={device_map} dtype={dtype} queue={len(queue_tts)}")
     
     BASE_OBJ=None
     CUSTOM_OBJ=None
     
 
     all_roles={ r.get('role') for r in queue_tts}
-    if all_roles & CUSTOM_VOICE:
+    if all_roles & CUSTOM_VOICE or "clone" in all_roles:
         # 存在自定义音色
+        load_started = time.perf_counter()
         CUSTOM_OBJ=Qwen3TTSModel.from_pretrained(
             f"{ROOT_DIR}/models/models--Qwen--Qwen3-TTS-12Hz-{model_name}-CustomVoice",
             device_map=device_map,
             dtype=dtype,
             attn_implementation=atten
         )
+        _log_timing(f"load_custom_model={time.perf_counter() - load_started:.2f}s")
     if "clone" in all_roles or all_roles-CUSTOM_VOICE:
         # 存在克隆音色
+        load_started = time.perf_counter()
         BASE_OBJ=Qwen3TTSModel.from_pretrained(
             f"{ROOT_DIR}/models/models--Qwen--Qwen3-TTS-12Hz-{model_name}-Base",
             device_map=device_map,
             dtype=dtype,
             attn_implementation=atten
         )
+        _log_timing(f"load_base_model={time.perf_counter() - load_started:.2f}s")
 
     # 说话人 prompt 缓存: 同一个 ref_wav 多次合成时, 跳过 speaker-embedding 提取
     # key = (ref_wav_path, ref_text or '', x_vector_only_mode)
@@ -87,12 +113,15 @@ def qwen3tts_fun(
         use_xvec = not bool(ref_text)
         cache_key = (ref_wav, ref_text or '', use_xvec)
         if cache_key in _prompt_cache:
+            stats["prompt_cache_hits"] += 1
             return _prompt_cache[cache_key]
+        prompt_started = time.perf_counter()
         items = BASE_OBJ.create_voice_clone_prompt(
             ref_audio=ref_wav,
             ref_text=ref_text if ref_text else None,
             x_vector_only_mode=use_xvec,
         )
+        stats["prompt_build_sec"] += time.perf_counter() - prompt_started
         _prompt_cache[cache_key] = items[0]
         return items[0]
 
@@ -116,29 +145,34 @@ def qwen3tts_fun(
 
     def _apply_rate_to_file(file_path, rate_text):
         if not rate_text or rate_text in ('+0%', '0%', '0'):
-            return
+            return False
         try:
             factor = 1.0 + float(str(rate_text).replace('%', '')) / 100.0
         except Exception:
-            return
+            return False
         if factor <= 0 or abs(factor - 1.0) < 0.01:
-            return
+            return False
         filt = _cascade_atempo(factor)
         if not filt:
-            return
+            return False
         tmp_out = file_path + '.tempo.wav'
+        rate_started = time.perf_counter()
         try:
             tools.runffmpeg([
                 '-y', '-i', file_path, '-filter:a', filt, tmp_out
             ], force_cpu=True)
             if Path(tmp_out).exists():
                 shutil.move(tmp_out, file_path)
+            stats["rate_calls"] += 1
+            stats["rate_sec"] += time.perf_counter() - rate_started
+            return True
         except Exception as e:
             logger.warning(f'Qwen3-TTS 调整语速失败 {file_path}: {e}')
             try:
                 Path(tmp_out).unlink(missing_ok=True)
             except Exception:
                 pass
+            return False
 
     # --- 极短参考音频兜底 ---
     # Qwen3-TTS 的 speaker embedding 在 < 1s 参考上非常不稳; < 0.3s 几乎必出噪声
@@ -162,6 +196,87 @@ def qwen3tts_fun(
     # 同 speaker 批量合成: MPS 上 batch=4 实测 1.88x 加速 (RTF 8.24→4.15)
     # CUDA 收益更大, CPU 基本等效; 保守上限 4 防 MPS OOM
     MAX_BATCH = 4
+    CLONE_DURATION_RATIO_LIMIT = 3.0
+    CLONE_ABS_DURATION_LIMIT_MS = 15000
+    CLONE_MIN_VALID_MS = 250
+    CLONE_FALLBACK_ROLE = "Vivian"
+
+    def _slot_duration_ms(it):
+        try:
+            source_ms = int(float(it.get('end_time_source', 0) or 0) - float(it.get('start_time_source', 0) or 0))
+        except Exception:
+            source_ms = 0
+        if source_ms <= 0:
+            try:
+                source_ms = int(float(it.get('end_time', 0) or 0) - float(it.get('start_time', 0) or 0))
+            except Exception:
+                source_ms = 0
+        return max(1, source_ms)
+
+    def _fallback_custom_voice(item, filename, reason):
+        if not CUSTOM_OBJ or CLONE_FALLBACK_ROLE not in CUSTOM_VOICE:
+            logger.warning(f"[qwen3tts] fallback skipped: {reason}")
+            return False
+        fallback_started = time.perf_counter()
+        try:
+            wavs, sr = CUSTOM_OBJ.generate_custom_voice(
+                text=item.get('text', ''),
+                language=language,
+                speaker=CLONE_FALLBACK_ROLE,
+                instruct=prompt,
+            )
+            sf.write(filename, wavs[0], sr)
+            _apply_rate_to_file(filename, item.get('rate'))
+            _trim_silence_inplace(filename)
+            stats["fallback_calls"] += 1
+            stats["fallback_sec"] += time.perf_counter() - fallback_started
+            logger.warning(f"[qwen3tts] clone fallback -> {CLONE_FALLBACK_ROLE}: {reason}")
+            _write_log(logs_file, json.dumps({
+                "type": "logs",
+                "text": f"clone fallback -> {CLONE_FALLBACK_ROLE}: {reason}"
+            }))
+            return True
+        except Exception as e:
+            logger.warning(f"[qwen3tts] fallback custom voice failed: {e}")
+            return False
+
+    def _trim_silence_inplace(file_path):
+        trim_started = time.perf_counter()
+        try:
+            tools.remove_silence_wav(file_path)
+        except Exception:
+            return False
+        stats["trim_calls"] += 1
+        stats["trim_sec"] += time.perf_counter() - trim_started
+        return True
+
+    def _sanitize_clone_output(item, filename):
+        sanitize_started = time.perf_counter()
+        try:
+            if not tools.vail_file(filename):
+                return False
+            _trim_silence_inplace(filename)
+            actual_ms = int(tools.get_audio_time(filename) or 0)
+            slot_ms = _slot_duration_ms(item)
+            max_allowed = min(CLONE_ABS_DURATION_LIMIT_MS, int(slot_ms * CLONE_DURATION_RATIO_LIMIT))
+            max_allowed = max(max_allowed, slot_ms)
+            if actual_ms < CLONE_MIN_VALID_MS:
+                if _fallback_custom_voice(item, filename, f"audio too short {actual_ms}ms"):
+                    actual_ms = int(tools.get_audio_time(filename) or 0)
+            elif actual_ms > max_allowed:
+                if _fallback_custom_voice(item, filename, f"audio too long {actual_ms}ms > {max_allowed}ms"):
+                    actual_ms = int(tools.get_audio_time(filename) or 0)
+                if actual_ms > max_allowed and actual_ms > 0:
+                    tools.precise_speed_up_audio(file_path=filename, target_duration_ms=max_allowed)
+                    _trim_silence_inplace(filename)
+                    actual_ms = int(tools.get_audio_time(filename) or 0)
+                    logger.warning(f"[qwen3tts] force-compressed clone audio to {actual_ms}ms (slot={slot_ms}ms)")
+            stats["sanitize_calls"] += 1
+            stats["sanitize_sec"] += time.perf_counter() - sanitize_started
+            return True
+        except Exception as e:
+            logger.warning(f"[qwen3tts] sanitize clone output failed {filename}: {e}")
+            return False
 
     def _resolve_clone_item(it):
         """返回 (kind, wavfile, ref_text, filename, text) 或 None(跳过)。
@@ -226,11 +341,15 @@ def qwen3tts_fun(
             if kind == 'custom':
                 _, speaker, _, filename, text = resolved
                 _write_log(logs_file, json.dumps({"type": "logs", "text": f'{i+1}/{_len} {role}'}))
+                synth_started = time.perf_counter()
                 wavs, sr = CUSTOM_OBJ.generate_custom_voice(
                     text=text, language=language, speaker=speaker, instruct=prompt,
                 )
+                stats["custom_items"] += 1
+                stats["custom_synth_sec"] += time.perf_counter() - synth_started
                 sf.write(filename, wavs[0], sr)
                 _apply_rate_to_file(filename, it.get('rate'))
+                _trim_silence_inplace(filename)
                 i += 1
                 continue
 
@@ -257,17 +376,33 @@ def qwen3tts_fun(
                 "text": f'{tag} {role} batch={len(batch_texts)} ref={Path(wavfile).name} rate={queue_tts[batch_src_idx[0]].get("rate", "+0%")}'
             }))
 
+            synth_started = time.perf_counter()
             wavs, sr = BASE_OBJ.generate_voice_clone(
                 text=batch_texts if len(batch_texts) > 1 else batch_texts[0],
                 language=language,
                 voice_clone_prompt=[prompt_item] * len(batch_texts),
             )
+            stats["clone_batches"] += 1
+            stats["clone_items"] += len(batch_texts)
+            stats["clone_synth_sec"] += time.perf_counter() - synth_started
             # wavs 是 list[np.ndarray], 与 batch_texts 一一对应
             for src_idx, fn, w in zip(batch_src_idx, batch_filenames, wavs):
                 sf.write(fn, w, sr)
                 _apply_rate_to_file(fn, queue_tts[src_idx].get('rate'))
+                _sanitize_clone_output(queue_tts[src_idx], fn)
 
             i = j
+        _log_timing(
+            "summary "
+            f"custom_items={stats['custom_items']} custom_synth={stats['custom_synth_sec']:.2f}s "
+            f"clone_batches={stats['clone_batches']} clone_items={stats['clone_items']} "
+            f"clone_synth={stats['clone_synth_sec']:.2f}s prompt_build={stats['prompt_build_sec']:.2f}s "
+            f"prompt_cache_hits={stats['prompt_cache_hits']} rate_calls={stats['rate_calls']} "
+            f"rate={stats['rate_sec']:.2f}s trim_calls={stats['trim_calls']} trim={stats['trim_sec']:.2f}s "
+            f"sanitize_calls={stats['sanitize_calls']} sanitize={stats['sanitize_sec']:.2f}s "
+            f"fallback_calls={stats['fallback_calls']} fallback={stats['fallback_sec']:.2f}s "
+            f"total={time.perf_counter() - overall_started:.2f}s"
+        )
         return True, None
     except Exception:
         msg = traceback.format_exc()

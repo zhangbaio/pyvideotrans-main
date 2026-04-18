@@ -1159,8 +1159,9 @@ class TransCreate(BaseTask):
                 logger.warning('Step4: auto-match 缺少 speaker_refs.json')
                 return None, None
             try:
-                from videotrans.util.qwen3local_fingerprint import ensure_qwen3local_fingerprint
-                ensure_qwen3local_fingerprint(is_cuda=self.cfg.is_cuda)
+                fingerprint_path = Path(ROOT_DIR) / "videotrans" / "voicejson" / "qwen3local_emb.json"
+                if not fingerprint_path.exists():
+                    logger.info('Step4: auto-match 缺少 qwen3local_emb.json，跳过同步指纹预热，直接使用降级匹配')
             except Exception as e:
                 logger.warning(f'Step4: auto-match 准备 qwen3local 指纹库失败: {e}')
             try:
@@ -1232,8 +1233,9 @@ class TransCreate(BaseTask):
         if not spk_json.exists() or not refs_json.exists():
             return None, None
         try:
-            from videotrans.util.qwen3local_fingerprint import ensure_qwen3local_fingerprint
-            ensure_qwen3local_fingerprint(is_cuda=self.cfg.is_cuda)
+            fingerprint_path = Path(ROOT_DIR) / "videotrans" / "voicejson" / "qwen3local_emb.json"
+            if not fingerprint_path.exists():
+                logger.info('Step4 auto-match: 缺少 qwen3local_emb.json，跳过同步指纹预热，直接使用降级匹配')
         except Exception as e:
             logger.warning(f'Step4 auto-match 准备 qwen3local 指纹库失败: {e}')
         try:
@@ -1271,6 +1273,55 @@ class TransCreate(BaseTask):
             return None, None
         logger.info(f'Step4 auto-match Qwen3Local Speaker→Voice {spk_voice_map}')
         self._signal(text=f'Speaker 鈫?Voice: {spk_voice_map}')
+        return spk_list, spk_voice_map
+
+    def _build_qwentts_auto_match_map(self):
+        spk_json = Path(self.cfg.cache_folder + "/speaker.json")
+        refs_json = Path(self.cfg.cache_folder + "/speaker_refs.json")
+        if not spk_json.exists() or not refs_json.exists():
+            return None, None
+        try:
+            spk_list = json.loads(spk_json.read_text(encoding='utf-8'))
+            ref_info = json.loads(refs_json.read_text(encoding='utf-8'))
+        except Exception as e:
+            logger.warning(f'Step4 qwentts auto-match read failed: {e}')
+            return None, None
+        if not spk_list or not ref_info:
+            return None, None
+
+        speaker_refs = {}
+        for spk_id, data in (ref_info or {}).items():
+            if isinstance(data, dict) and data.get('wav') and Path(data['wav']).exists():
+                speaker_refs[spk_id] = data['wav']
+        if not speaker_refs:
+            return None, None
+
+        try:
+            from videotrans.util.voice_matcher import match_voices_to_speakers_verbose
+            rolelist = tools.get_qwen3tts_rolelist()
+            available_voices = list(dict.fromkeys(
+                voice for voice in rolelist.values()
+                if voice not in ('No', 'auto-match', 'clone', '')
+            ))
+            matched = match_voices_to_speakers_verbose(
+                speaker_refs=speaker_refs,
+                all_voices=available_voices,
+                tts_type=self.cfg.tts_type,
+            )
+            spk_voice_map = matched.get('mapping', {})
+            detail_path = Path(self.cfg.cache_folder + "/auto_match_detail_qwentts.json")
+            detail_path.write_text(
+                json.dumps(matched.get('details', {}), ensure_ascii=False, indent=2),
+                encoding='utf-8'
+            )
+        except Exception as e:
+            logger.warning(f'Step4 qwentts auto-match failed: {e}')
+            return None, None
+
+        if not spk_voice_map:
+            return None, None
+        logger.info(f'Step4 auto-match QwenTTS Speaker→Voice {spk_voice_map}')
+        self._signal(text=f'Speaker → Voice: {spk_voice_map}')
         return spk_list, spk_voice_map
 
     def _build_speaker_ref_map(self):
@@ -1679,14 +1730,32 @@ class TransCreate(BaseTask):
         self.precent = 100
         self.task_finished_at = time.time()
         self._stage_end("task_done")
+        self._finalize_task_logging(
+            status="succeed",
+            extra={
+                "target_mp4": self.cfg.targetdir_mp4,
+                "target_wav_output": self.cfg.target_wav_output,
+                "target_sub": self.cfg.target_sub,
+                "subtitle_type": self.cfg.subtitle_type,
+                "tts_type": self.cfg.tts_type,
+            }
+        )
         try:
             shutil.rmtree(self.cfg.cache_folder, ignore_errors=True)
         except:
             pass
-        self._signal(text=json.dumps({
-            "name": self.cfg.name,
-            "timing": self._timing_summary(),
-        }, ensure_ascii=False), type='succeed')
+        payload = self._task_summary_payload(
+            status="succeed",
+            extra={
+                "target_mp4": self.cfg.targetdir_mp4,
+                "target_wav_output": self.cfg.target_wav_output,
+                "target_sub": self.cfg.target_sub,
+                "subtitle_type": self.cfg.subtitle_type,
+                "tts_type": self.cfg.tts_type,
+            }
+        )
+        payload["name"] = self.cfg.name
+        self._signal(text=json.dumps(payload, ensure_ascii=False), type='succeed')
         tools.send_notification(tr('Succeed'), f"{self.cfg.basename}")
 
     # 从原始视频分离出 无声视频
@@ -1814,6 +1883,8 @@ class TransCreate(BaseTask):
         # 取出设置的每行角色
         line_roles = app_cfg.line_roles
         voice_role = self.cfg.voice_role
+        if voice_role == 'auto-match' and self.cfg.tts_type == QWEN_TTS:
+            voice_role = params.get('qwentts_role', '') or 'Chelsie'
         if voice_role == 'auto-match' and self.cfg.tts_type == QWEN3LOCAL_TTS:
             voice_role = 'Vivian'
         line_ref_map = {}
@@ -1828,6 +1899,8 @@ class TransCreate(BaseTask):
         spk_list_v, spk_voice_map = self._build_speaker_voice_map()
         if self.cfg.tts_type == QWEN3LOCAL_TTS and self.cfg.voice_role == 'auto-match':
             spk_list_v, spk_voice_map = self._build_qwen3local_auto_match_map()
+        elif self.cfg.tts_type == QWEN_TTS and self.cfg.voice_role == 'auto-match':
+            spk_list_v, spk_voice_map = self._build_qwentts_auto_match_map()
         # Step 5: 克隆型 TTS，按说话人绑定克隆参考音频
         spk_list_c, spk_ref_map = self._build_speaker_ref_map()
         # 两者 tts_type 互斥，最多一个生效
@@ -1845,7 +1918,7 @@ class TransCreate(BaseTask):
                 voice = spk_voice_map.get(spk_list[i], voice_role)
             elif spk_ref_map and spk_list and i < len(spk_list):
                 # Step5 克隆模式：voice='clone' 触发下方 ref_wav 逻辑
-                voice = 'auto-match' if self.cfg.tts_type == QWEN_TTS else 'clone'
+                voice = voice_role if self.cfg.tts_type == QWEN_TTS else 'clone'
             else:
                 voice = voice_role
 
@@ -2052,6 +2125,36 @@ class TransCreate(BaseTask):
                          '-c:a', 'pcm_s16le', os.path.basename(tmpwav)], cmd_dir=self.cfg.cache_folder)
         shutil.copy2(tmpwav, peiyinm4a)
 
+    def _normalize_dubbing_audio(self):
+        if self._exit() or not self.shoud_dubbing or not tools.vail_file(self.cfg.target_wav):
+            return
+        if settings.get('normalize_dubbing_audio', True) is False:
+            return
+        target_i = settings.get('dubbing_loudnorm_i', -16)
+        target_lra = settings.get('dubbing_loudnorm_lra', 11)
+        target_tp = settings.get('dubbing_loudnorm_tp', -1.5)
+        tmpwav = Path(self.cfg.cache_folder + f'/{time.time()}-loudnorm.wav').as_posix()
+        try:
+            logger.debug(
+                f"[Audio-Norm] loudnorm target={self.cfg.target_wav} "
+                f"I={target_i} LRA={target_lra} TP={target_tp}"
+            )
+            tools.runffmpeg([
+                '-y',
+                '-i', os.path.basename(self.cfg.target_wav),
+                '-af', f'loudnorm=I={target_i}:LRA={target_lra}:TP={target_tp}',
+                '-ar', '48000',
+                '-ac', '2',
+                '-c:a', 'pcm_s16le',
+                os.path.basename(tmpwav)
+            ], cmd_dir=self.cfg.cache_folder, force_cpu=True)
+            if tools.vail_file(tmpwav):
+                shutil.copy2(tmpwav, self.cfg.target_wav)
+        except Exception as e:
+            logger.warning(f'[Audio-Norm] loudnorm failed, keep original dubbing audio: {e}')
+        finally:
+            Path(tmpwav).unlink(missing_ok=True)
+
     # 处理所需字幕
     def _process_subtitles(self) -> Union[tuple[str, str], None]:
         logger.debug(f"\n======准备要嵌入的字幕:{self.cfg.subtitle_type=}=====")
@@ -2214,6 +2317,7 @@ class TransCreate(BaseTask):
                 pass
 
             # 添加背景音乐
+            self._normalize_dubbing_audio()
             self._back_music()
             # 重新嵌入分离出的背景音
             self._separate()

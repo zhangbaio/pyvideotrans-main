@@ -3,7 +3,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QUrl, Qt
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QProgressBar
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QProgressBar
 
 from videotrans.configure.config import tr
 from videotrans.util import tools
@@ -22,6 +22,10 @@ class ClickableProgressBar(QLabel):
         self.paused = False
         self.ended = False
         self.error = ""
+        self.total_sec = None
+        self.timing = None
+        self.log_path = None
+        self.summary_path = None
 
         self.progress_bar = QProgressBar(self)
         self.progress_bar.setFixedHeight(35)
@@ -60,15 +64,27 @@ class ClickableProgressBar(QLabel):
         return f"{hours}h{mins:02d}m{secs:02d}s"
 
     def _build_timing_tooltip(self, timing):
-        if not isinstance(timing, dict):
-            return ""
         lines = []
-        total_sec = timing.get("total_sec")
-        if total_sec is not None:
-            lines.append(f"total: {self._format_seconds(total_sec)}")
-        for name, sec in (timing.get("stages") or {}).items():
-            lines.append(f"{name}: {self._format_seconds(sec)}")
+        if isinstance(timing, dict):
+            total_sec = timing.get("total_sec")
+            if total_sec is not None:
+                lines.append(f"total: {self._format_seconds(total_sec)}")
+            for name, sec in (timing.get("stages") or {}).items():
+                lines.append(f"{name}: {self._format_seconds(sec)}")
+        if self.log_path:
+            lines.append(f"log: {self.log_path}")
+        if self.summary_path:
+            lines.append(f"summary: {self.summary_path}")
         return "\n".join(lines)
+
+    def setTaskLogs(self, log_path=None, summary_path=None):
+        if log_path:
+            self.log_path = log_path
+        if summary_path:
+            self.summary_path = summary_path
+        tooltip = self._build_timing_tooltip(self.timing)
+        if tooltip:
+            self.progress_bar.setToolTip(tooltip)
 
     def setTarget(self, target_dir=None, name=None):
         self.target_dir = target_dir
@@ -78,6 +94,12 @@ class ClickableProgressBar(QLabel):
     def setEnd(self, total_sec=None, timing=None):
         if self.error:
             return
+        if total_sec is not None:
+            self.total_sec = total_sec
+        if isinstance(timing, dict):
+            self.timing = timing
+        total_sec = self.total_sec
+        timing = self.timing
         self.ended = True
         self.precent = 100
         self.progress_bar.setValue(100)
@@ -129,3 +151,19 @@ class ClickableProgressBar(QLabel):
             if self.error:
                 tools.show_error(self.error)
             QDesktopServices.openUrl(QUrl.fromLocalFile(self.target_dir))
+
+    def contextMenuEvent(self, event):
+        menu = QMenu(self)
+        if self.target_dir:
+            open_dir_action = menu.addAction(tr("Open Dir"))
+        else:
+            open_dir_action = None
+        open_log_action = menu.addAction(tr("Open Log")) if self.log_path else None
+        open_summary_action = menu.addAction(tr("Open Summary")) if self.summary_path else None
+        chosen = menu.exec(event.globalPos())
+        if chosen == open_dir_action:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self.target_dir))
+        elif chosen == open_log_action and self.log_path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self.log_path))
+        elif chosen == open_summary_action and self.summary_path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self.summary_path))

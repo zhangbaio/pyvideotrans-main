@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import tempfile
 from functools import lru_cache
@@ -130,6 +131,7 @@ class AppCfg:
     # 队列与控制
     stoped_uuid_set: set = field(default_factory=set)
     uuid_logs_queue: Dict = field(default_factory=dict)
+    task_logs: Dict = field(default_factory=dict)
     global_msg: List = field(default_factory=list)
     exit_soft: bool = False
 
@@ -337,6 +339,10 @@ class AppSettings:
             "countdown_sec": 30,
             "backaudio_volume": 0.8,
             "loop_backaudio": 1,
+            "normalize_dubbing_audio": True,
+            "dubbing_loudnorm_i": -16,
+            "dubbing_loudnorm_lra": 11,
+            "dubbing_loudnorm_tp": -1.5,
             "cuda_com_type": "default",
             "initial_prompt_zh-cn": "",  # 注意：在对象中会映射为 _zh_cn
             "initial_prompt_zh-tw": "",
@@ -769,6 +775,86 @@ def push_queue(uuid, jsondata):
             app_cfg.uuid_logs_queue[uuid].put_nowait(jsondata)
     except Exception as e:
         logger.exception(f'push_queue错误：{e}', exc_info=True)
+
+
+def register_task_log(uuid, *, log_path, summary_path=None, meta=None):
+    if not uuid or not log_path:
+        return
+    try:
+        log_file = Path(log_path)
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        summary_file = Path(summary_path) if summary_path else log_file.with_name("summary.json")
+        payload = {
+            "log_path": log_file.as_posix(),
+            "summary_path": summary_file.as_posix(),
+            "meta": meta or {}
+        }
+        current = app_cfg.task_logs.get(uuid)
+        if current == payload:
+            return
+        app_cfg.task_logs[uuid] = payload
+        if not log_file.exists():
+            header = {
+                "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                "uuid": uuid,
+                "meta": meta or {}
+            }
+            log_file.write_text(json.dumps(header, ensure_ascii=False) + "\n", encoding="utf-8")
+    except Exception as e:
+        logger.exception(f'register_task_log错误：{e}', exc_info=True)
+
+
+def write_task_log(uuid, *, text="", level="INFO", event_type="logs", extra=None):
+    if not uuid:
+        return
+    task_info = app_cfg.task_logs.get(uuid)
+    if not task_info:
+        return
+    try:
+        line = {
+            "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+            "level": level,
+            "type": event_type,
+            "uuid": uuid,
+            "text": text,
+        }
+        if extra:
+            line["extra"] = extra
+        with open(task_info["log_path"], "a", encoding="utf-8") as f:
+            f.write(json.dumps(line, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.exception(f'write_task_log错误：{e}', exc_info=True)
+
+
+def write_task_summary(uuid, payload):
+    if not uuid:
+        return
+    task_info = app_cfg.task_logs.get(uuid)
+    if not task_info:
+        return
+    try:
+        summary_path = Path(task_info["summary_path"])
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.exception(f'write_task_summary错误：{e}', exc_info=True)
+
+
+def persist_task_log_artifacts(uuid, target_dir):
+    if not uuid or not target_dir:
+        return
+    task_info = app_cfg.task_logs.get(uuid)
+    if not task_info:
+        return
+    try:
+        dst_dir = Path(target_dir)
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        for key in ("log_path", "summary_path"):
+            src = Path(task_info[key])
+            if src.exists():
+                shutil.copy2(src, dst_dir / src.name)
+    except Exception as e:
+        logger.exception(f'persist_task_log_artifacts错误：{e}', exc_info=True)
 
 
 def update_logging_level(new_level_str):

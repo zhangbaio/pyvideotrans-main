@@ -859,14 +859,21 @@ class WinAction(WinActionSub):
         elif _type == 'succeed':
             total_sec = None
             timing = None
+            task_log = None
             try:
                 payload = json.loads(text) if isinstance(text, str) else text
             except Exception:
                 payload = None
             if isinstance(payload, dict):
                 timing = payload.get('timing')
+                task_log = payload.get('task_log')
                 if isinstance(timing, dict):
                     total_sec = timing.get('total_sec')
+                if isinstance(task_log, dict):
+                    self.processbtns[uuid].setTaskLogs(
+                        log_path=task_log.get('log_path'),
+                        summary_path=task_log.get('summary_path'),
+                    )
             self.processbtns[uuid].setEnd(total_sec=total_sec, timing=timing)
             if self.processbtns[uuid].name in self.queue_mp4:
                 self.queue_mp4.remove(self.processbtns[uuid].name)

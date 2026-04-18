@@ -25,6 +25,28 @@ class QWENTTS(BaseTTS):
         if self.model.startswith('qwen-tts'):
             self.model='qwen3-tts-flash'
 
+    def _resolve_voice_name(self, raw_role: str) -> str:
+        role = (raw_role or '').strip()
+        fallback = params.get('qwentts_role', '') or 'Chelsie'
+        if not role or role in ('No', 'clone', 'auto-match'):
+            role = fallback
+
+        mapped = self.role_dict.get(role)
+        if mapped and mapped not in ('No', 'auto-match', 'clone'):
+            return mapped
+
+        valid_values = {str(v).strip() for v in self.role_dict.values() if str(v).strip() not in ('No', 'auto-match', 'clone')}
+        if role in valid_values:
+            return role
+
+        fallback_mapped = self.role_dict.get(fallback)
+        if fallback_mapped and fallback_mapped not in ('No', 'auto-match', 'clone'):
+            logger.warning(f"[qwentts] unsupported role '{raw_role}', fallback to '{fallback_mapped}'")
+            return fallback_mapped
+
+        logger.warning(f"[qwentts] unsupported role '{raw_role}', fallback to 'Chelsie'")
+        return 'Chelsie'
+
 
     # 强制单个线程执行，防止频繁并发失败
     def _exec(self):
@@ -43,7 +65,7 @@ class QWENTTS(BaseTTS):
         def _run():
             if self._exit() or tools.vail_file(data_item['filename']):
                 return
-            role = self.role_dict.get(data_item['role'],'Cherry')
+            role = self._resolve_voice_name(data_item.get('role', ''))
             response = dashscope.audio.qwen_tts.SpeechSynthesizer.call(
                 model=self.model,
                 api_key=self.api_key,

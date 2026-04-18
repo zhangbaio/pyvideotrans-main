@@ -1,5 +1,7 @@
 import copy
+import json
 import shutil
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -83,8 +85,26 @@ class TranslateSrt(BaseTask):
         if self._exit(): return
         self.hasend = True
         self.precent = 100
+        self.task_finished_at = time.time()
         if Path(self.cfg.target_sub).is_file():
-            self._signal(text=f"{self.cfg.name}", type='succeed')
+            self._finalize_task_logging(
+                status="succeed",
+                extra={
+                    "target_sub": self.cfg.target_sub,
+                    "translate_type": self.cfg.translate_type,
+                    "out_format": self.out_format,
+                }
+            )
+            payload = self._task_summary_payload(
+                status="succeed",
+                extra={
+                    "target_sub": self.cfg.target_sub,
+                    "translate_type": self.cfg.translate_type,
+                    "out_format": self.out_format,
+                }
+            )
+            payload["name"] = self.cfg.name
+            self._signal(text=json.dumps(payload, ensure_ascii=False), type='succeed')
         try:
             if self.cfg.shound_del_name:
                 Path(self.cfg.shound_del_name).unlink(missing_ok=True)

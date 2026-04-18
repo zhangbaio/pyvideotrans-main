@@ -34,6 +34,7 @@ class QwenttsLocal(BaseTTS):
 
 
     def _exec(self):
+        overall_started = time.perf_counter()
         Path(f'{TEMP_DIR}/{self.uuid}').mkdir(parents=True,exist_ok=True)
         logs_file = f'{TEMP_DIR}/{self.uuid}/qwen3tts-{time.time()}.log'
         
@@ -50,17 +51,31 @@ class QwenttsLocal(BaseTTS):
             "roledict":tools.get_qwenttslocal_rolelist(),
             "prompt":params.get('qwenttslocal_prompt', '')
         }
+        synth_started = time.perf_counter()
         self._new_process(callback=qwen3tts_fun,title=title,is_cuda=self.is_cuda,kwargs=kwargs)
+        logger.info(
+            f"[qwen3tts][timing] subprocess generation finished in "
+            f"{time.perf_counter() - synth_started:.2f}s for {len(self.queue_tts)} items"
+        )
     
         self._signal(text=f'convert wav')
         all_task = []
+        convert_started = time.perf_counter()
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=min(4,len(self.queue_tts),os.cpu_count())) as pool:
             for item in self.queue_tts:
                 filename=item.get('filename','')+"-qwen3tts.wav"
                 if tools.vail_file(filename):
-                    all_task.append(pool.submit(self.convert_to_wav, filename,item['filename']))
+                    all_task.append(pool.submit(self.convert_to_wav, filename, item['filename'], None, False))
             if len(all_task) > 0:
                 _ = [i.result() for i in all_task]
+        logger.info(
+            f"[qwen3tts][timing] wav conversion finished in "
+            f"{time.perf_counter() - convert_started:.2f}s for {len(all_task)} items"
+        )
+        logger.info(
+            f"[qwen3tts][timing] local pipeline total="
+            f"{time.perf_counter() - overall_started:.2f}s"
+        )
 
 

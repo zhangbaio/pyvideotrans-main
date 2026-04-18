@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List
 
+from videotrans.configure import config as config_module
 from videotrans.configure.config import tr, params, settings, app_cfg, logger, ROOT_DIR
 from videotrans.configure._base import BaseCon
 from videotrans.task.taskcfg import TaskCfgBase
@@ -47,16 +48,47 @@ class BaseTask(BaseCon):
         if self.cfg.uuid:
             self.uuid = self.cfg.uuid
         self.task_started_at = time.time()
+        self._ensure_task_logging()
+
+    def _ensure_task_logging(self):
+        if not self.uuid:
+            return
+        task_dir = Path(ROOT_DIR) / "logs" / "tasks" / self.uuid
+        meta = {
+            "basename": getattr(self.cfg, "basename", "") or "",
+            "name": getattr(self.cfg, "name", "") or "",
+            "target_dir": getattr(self.cfg, "target_dir", "") or "",
+            "cache_folder": getattr(self.cfg, "cache_folder", "") or "",
+            "task_class": self.__class__.__name__,
+        }
+        config_module.register_task_log(
+            self.uuid,
+            log_path=(task_dir / "run.log").as_posix(),
+            summary_path=(task_dir / "summary.json").as_posix(),
+            meta=meta,
+        )
+
+    def _signal(self, **kwargs):
+        self._ensure_task_logging()
+        return super()._signal(**kwargs)
 
     def _stage_start(self, name: str):
         stage = self.stage_timings.setdefault(name, {})
         stage["started_at"] = time.time()
+        config_module.write_task_log(self.uuid, text=f"stage_start:{name}", level="INFO", event_type="stage")
 
     def _stage_end(self, name: str):
         stage = self.stage_timings.setdefault(name, {})
         started_at = stage.get("started_at")
         if started_at:
             stage["seconds"] = round(time.time() - started_at, 2)
+            config_module.write_task_log(
+                self.uuid,
+                text=f"stage_end:{name}",
+                level="INFO",
+                event_type="stage",
+                extra={"seconds": stage["seconds"]},
+            )
 
     def _timing_summary(self) -> dict:
         total_sec = self.task_finished_at - self.task_started_at if self.task_finished_at and self.task_started_at else 0.0
@@ -66,6 +98,39 @@ class BaseTask(BaseCon):
             if seconds is not None:
                 stages[name] = seconds
         return {"total_sec": round(max(total_sec, 0.0), 2), "stages": stages}
+
+    def _task_summary_payload(self, *, status="succeed", extra=None):
+        task_log = config_module.app_cfg.task_logs.get(self.uuid, {})
+        payload = {
+            "uuid": self.uuid,
+            "status": status,
+            "task_class": self.__class__.__name__,
+            "input": {
+                "name": getattr(self.cfg, "name", None),
+                "basename": getattr(self.cfg, "basename", None),
+            },
+            "paths": {
+                "target_dir": getattr(self.cfg, "target_dir", None),
+                "cache_folder": getattr(self.cfg, "cache_folder", None),
+            },
+            "timing": self._timing_summary(),
+            "task_log": {
+                "log_path": task_log.get("log_path"),
+                "summary_path": task_log.get("summary_path"),
+            },
+        }
+        if extra:
+            payload["extra"] = extra
+        return payload
+
+    def _finalize_task_logging(self, *, status="succeed", extra=None):
+        self._ensure_task_logging()
+        payload = self._task_summary_payload(status=status, extra=extra)
+        config_module.write_task_summary(self.uuid, payload)
+        persist_dir = getattr(self.cfg, "target_dir", None)
+        if getattr(self.cfg, "only_out_mp4", False) and persist_dir:
+            persist_dir = Path(persist_dir).parent.as_posix()
+        config_module.persist_task_log_artifacts(self.uuid, persist_dir)
 
     # 预先处理，例如从视频中拆分音频、人声背景分离、转码等
     def prepare(self):

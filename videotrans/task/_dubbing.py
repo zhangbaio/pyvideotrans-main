@@ -1,5 +1,6 @@
 import copy
 import datetime
+import json
 import re
 import shutil
 import time
@@ -279,12 +280,32 @@ class DubbingSrt(BaseTask):
             return
         self.hasend = True
         self.precent = 100
+        self.task_finished_at = time.time()
             
         try:
             if Path(self.cfg.target_wav).is_file():
                 # 移除末尾静音
                 tools.remove_silence_from_end(self.cfg.target_wav, is_start=False)
-                self._signal(text=f"{self.cfg.name}", type='succeed')
+                self._finalize_task_logging(
+                    status="succeed",
+                    extra={
+                        "target_wav": self.cfg.target_wav,
+                        "target_dir": self.cfg.target_dir,
+                        "tts_type": self.cfg.tts_type,
+                        "out_ext": self.out_ext,
+                    }
+                )
+                payload = self._task_summary_payload(
+                    status="succeed",
+                    extra={
+                        "target_wav": self.cfg.target_wav,
+                        "target_dir": self.cfg.target_dir,
+                        "tts_type": self.cfg.tts_type,
+                        "out_ext": self.out_ext,
+                    }
+                )
+                payload["name"] = self.cfg.name
+                self._signal(text=json.dumps(payload, ensure_ascii=False), type='succeed')
                 if self.out_ext.lower()!='wav':
                     tools.runffmpeg(['-y', '-i', self.cfg.target_wav, f'{self.cfg.target_dir}/{self.cfg.noextname}.{self.out_ext}'])
                     Path(self.cfg.target_wav).unlink(missing_ok=True)

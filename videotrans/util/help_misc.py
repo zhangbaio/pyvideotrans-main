@@ -360,9 +360,19 @@ def set_process(*, text="", type="logs", uuid=None):
             text = text[:150]
         if app_cfg.exec_mode=='cli':
             print(text)
+            if uuid:
+                config.write_task_log(uuid, text=text, level="INFO", event_type=type)
             return
         log = {"text": text, "type": type, "uuid": uuid}
         if uuid:
+            level = "INFO"
+            if type == 'error':
+                level = "ERROR"
+            elif type == 'succeed':
+                level = "INFO"
+            elif type == 'set_precent':
+                level = "DEBUG"
+            config.write_task_log(uuid, text=text, level=level, event_type=type)
             config.push_queue(uuid, log)
         else:
             app_cfg.global_msg.append(log)

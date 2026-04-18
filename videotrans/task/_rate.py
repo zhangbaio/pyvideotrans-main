@@ -329,11 +329,12 @@ class SpeedRate:
         if self.audio_data:
             tools.set_process(text='Processing audio speed...', uuid=self.uuid)
             if HAS_RUBBERBAND and self.audio_speed_rubberband:
-                self._execute_audio_speedup_rubberband()
+                logger.debug("[SpeedRate] Rubberband available, using audio speed-up pipeline.")
             else:
                  logger.warning("[SpeedRate] Rubberband 不可用，跳过音频物理变速。")
         
         # 4. 视频变速
+            self._execute_audio_speedup_rubberband()
         if self.shoud_videorate and self.video_for_clips:
             tools.set_process(text='Processing video speed...', uuid=self.uuid)
             processed_video_clips = self._video_speeddown()
@@ -502,9 +503,11 @@ class SpeedRate:
             # 注册任务
             if audio_target < dubb_dur:
                 self.audio_data.append({
+                    "line": it['line'],
                     "filename": it['filename'],
                     "dubb_time": dubb_dur,
-                    "target_time": audio_target
+                    "target_time": audio_target,
+                    "source_duration": source_dur
                 })
             
             if self.shoud_videorate:
@@ -526,22 +529,47 @@ class SpeedRate:
     def _execute_audio_speedup_rubberband(self):
         logger.debug(f"[Audio] 开始处理 {len(self.audio_data)} 个音频变速任务")
         all_task = []
+        jobs = []
         for d in self.audio_data:
             if HAS_RUBBERBAND and self.audio_speed_rubberband:
+                engine = "rubberband"
+                logger.debug(
+                    f"[Audio-Speed] plan line={d.get('line')} engine={engine} "
+                    f"before={d.get('dubb_time')}ms target={d.get('target_time')}ms "
+                    f"source={d.get('source_duration')}ms file={Path(d['filename']).name}"
+                )
                 all_task.append(GlobalProcessManager.submit_task_cpu(
                     _change_speed_rubberband,
                     input_path=d['filename'],
                     target_duration=d['target_time']
                 ))
             else:
+                engine = "ffmpeg-atempo"
+                logger.debug(
+                    f"[Audio-Speed] plan line={d.get('line')} engine={engine} "
+                    f"before={d.get('dubb_time')}ms target={d.get('target_time')}ms "
+                    f"source={d.get('source_duration')}ms file={Path(d['filename']).name}"
+                )
                 all_task.append(GlobalProcessManager.submit_task_cpu(
                     tools.precise_speed_up_audio,
                     file_path=d['filename'],
                     target_duration_ms=d['target_time']
                 ))
-        for task in all_task:
-            try: task.result()
-            except: pass
+            jobs.append((d, engine))
+        for task, (d, engine) in zip(all_task, jobs):
+            try:
+                task.result()
+                after_ms = tools.get_audio_time(d['filename']) if Path(d['filename']).exists() else 0
+                logger.debug(
+                    f"[Audio-Speed] done line={d.get('line')} engine={engine} "
+                    f"after={after_ms}ms target={d.get('target_time')}ms "
+                    f"delta={after_ms - d.get('target_time', 0)}ms file={Path(d['filename']).name}"
+                )
+            except Exception as e:
+                logger.error(
+                    f"[Audio-Speed] failed line={d.get('line')} engine={engine} "
+                    f"target={d.get('target_time')}ms file={Path(d['filename']).name}: {e}"
+                )
 
     def _video_speeddown(self):
         data = []
@@ -652,6 +680,15 @@ class SpeedRate:
                 except Exception as e:
                     logger.error(f"截断音频失败: {e}")
                     audio_list.append(audio_file) # 失败则原样放入
+
+                if current_slot_audio_len > slot_duration and not self.shoud_videorate and audio_list:
+                    try:
+                        cut_seg = AudioSegment.from_file(audio_file)[:slot_duration]
+                        final_slot_path = Path(self.cache_folder, f"final_slot_cut_fix_{i}.wav").as_posix()
+                        cut_seg.export(final_slot_path, format='wav')
+                        audio_list[-1] = final_slot_path
+                    except Exception as e:
+                        logger.error(f"[Audio-Sync] overflow fix failed {audio_file}: {e}")
 
             elif current_slot_audio_len < slot_duration:
                 # 补尾部静音
@@ -765,9 +802,10 @@ class TtsSpeedRate(SpeedRate):
         if self.audio_data:
             tools.set_process(text='Processing audio speed...', uuid=self.uuid)
             if HAS_RUBBERBAND and self.audio_speed_rubberband:
-                self._execute_audio_speedup_rubberband()
+                logger.debug("[SpeedRate] Rubberband available, using audio speed-up pipeline.")
             else:
                  logger.warning("[SpeedRate] Rubberband 不可用，跳过音频物理变速。")
+            self._execute_audio_speedup_rubberband()
 
         tools.set_process(text='Concatenating final audio...', uuid=self.uuid)
         self._concat_audio_aligned()
