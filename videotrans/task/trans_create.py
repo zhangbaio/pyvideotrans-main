@@ -723,6 +723,12 @@ class TransCreate(BaseTask):
         MAX_MS = 20000  # 最长20秒（火山声音复刻推荐 10-30s；DashScope/CosyVoice 也能吃）
 
         ref_info = {}  # spk_id → {wav, text, start_ms, end_ms}, 供 Step 5 克隆 TTS 使用
+        line_ref_info = {}  # subtitle_line -> local ref info
+        total_audio_ms = tools.get_audio_time(source_audio) if tools.vail_file(source_audio) else 0
+        try:
+            from videotrans.util.prosody_analyzer import analyze_reference_prosody
+        except Exception:
+            analyze_reference_prosody = None
         for spk_id, segs in spk_segs.items():
             out_path = f"{self.cfg.cache_folder}/{spk_id}_ref.wav"
 
@@ -777,6 +783,72 @@ class TransCreate(BaseTask):
             except Exception as e:
                 logger.warning(f'提取参考音频失败 {spk_id}: {e}')
 
+            # 每句附近同 speaker 参考音频: 优先保留局部语气、停顿和节奏
+            for idx, (start_ms, end_ms, line_index) in enumerate(segs):
+                if line_index >= len(self.source_srt_list):
+                    continue
+                cur_seg = self.source_srt_list[line_index]
+                local_start, local_end = start_ms, end_ms
+                chosen = [(start_ms, end_ms, line_index)]
+                left = idx - 1
+                right = idx + 1
+                while (local_end - local_start) < 4000 and (left >= 0 or right < len(segs)):
+                    left_gap = None
+                    right_gap = None
+                    if left >= 0:
+                        left_gap = start_ms - segs[left][1]
+                    if right < len(segs):
+                        right_gap = segs[right][0] - end_ms
+                    pick = None
+                    if left_gap is not None and left_gap <= 1800 and (right_gap is None or left_gap <= right_gap):
+                        pick = ("left", segs[left])
+                        left -= 1
+                    elif right_gap is not None and right_gap <= 1800:
+                        pick = ("right", segs[right])
+                        right += 1
+                    else:
+                        break
+                    _, picked = pick
+                    chosen.append(picked)
+                    local_start = min(local_start, picked[0])
+                    local_end = max(local_end, picked[1])
+
+                if local_end - local_start < 1500:
+                    pad = (1500 - (local_end - local_start)) // 2 + 1
+                    local_start = max(0, local_start - pad)
+                    local_end = min(total_audio_ms or local_end + pad, local_end + pad)
+                if local_end - local_start > 5000:
+                    center = (start_ms + end_ms) // 2
+                    local_start = max(0, center - 2500)
+                    local_end = min(total_audio_ms or center + 2500, center + 2500)
+
+                local_path = f"{self.cfg.cache_folder}/{spk_id}_line_{cur_seg['line']}_ref.wav"
+                local_ss = tools.ms_to_time_string(ms=local_start)
+                local_to = tools.ms_to_time_string(ms=local_end)
+                local_text_parts = []
+                for _, _, li in sorted(chosen, key=lambda x: x[2]):
+                    try:
+                        txt = (self.source_srt_list[li].get('text') or '').strip()
+                    except Exception:
+                        txt = ''
+                    if txt:
+                        local_text_parts.append(txt)
+                local_text = ''.join(local_text_parts) if self.cfg.source_language_code[:2].lower() == 'zh' else ' '.join(local_text_parts)
+                try:
+                    if not Path(local_path).exists():
+                        tools.cut_from_audio(audio_file=source_audio, ss=local_ss, to=local_to, out_file=local_path)
+                    prosody = analyze_reference_prosody(local_path, local_text, cur_seg['end_time'] - cur_seg['start_time']) if analyze_reference_prosody else {}
+                    line_ref_info[str(cur_seg['line'])] = {
+                        'speaker': spk_id,
+                        'wav': local_path,
+                        'text': local_text,
+                        'start_ms': local_start,
+                        'end_ms': local_end,
+                        'prosody': prosody,
+                    }
+                except Exception as e:
+                    logger.warning(f'提取局部参考音频失败 line={cur_seg.get("line")} {spk_id}: {e}')
+
         # 保存 speaker_refs.json (Step 5 的入口)
         if ref_info:
             refs_json_path = Path(f"{self.cfg.cache_folder}/speaker_refs.json")
@@ -786,6 +858,16 @@ class TransCreate(BaseTask):
             )
             try:
                 shutil.copy2(refs_json_path, self.cfg.target_dir + "/speaker_refs.json")
+            except Exception:
+                pass
+        if line_ref_info:
+            line_refs_json_path = Path(f"{self.cfg.cache_folder}/speaker_line_refs.json")
+            line_refs_json_path.write_text(
+                json.dumps(line_ref_info, ensure_ascii=False, indent=2),
+                encoding='utf-8'
+            )
+            try:
+                shutil.copy2(line_refs_json_path, self.cfg.target_dir + "/speaker_line_refs.json")
             except Exception:
                 pass
 
@@ -1470,6 +1552,13 @@ class TransCreate(BaseTask):
         voice_role = self.cfg.voice_role
         if voice_role == 'auto-match' and self.cfg.tts_type == QWEN3LOCAL_TTS:
             voice_role = 'Vivian'
+        line_ref_map = {}
+        line_refs_path = Path(self.cfg.cache_folder + "/speaker_line_refs.json")
+        if line_refs_path.exists():
+            try:
+                line_ref_map = json.loads(line_refs_path.read_text(encoding='utf-8'))
+            except Exception as e:
+                logger.warning(f'读取 speaker_line_refs.json 失败: {e}')
 
         # Step 4: 非克隆 TTS，按说话人分配不同音色
         spk_list_v, spk_voice_map = self._build_speaker_voice_map()
@@ -1515,13 +1604,29 @@ class TransCreate(BaseTask):
                 "tts_type": self.cfg.tts_type,
                 "filename": f"{self.cfg.cache_folder}/dubb-{i}.wav"
             }
+            local_ref = line_ref_map.get(line_key) if isinstance(line_ref_map, dict) else None
+            if local_ref:
+                tmp_dict['prosody'] = local_ref.get('prosody', {})
+                suggested_rate = (local_ref.get('prosody') or {}).get('suggested_rate')
+                if isinstance(suggested_rate, int) and suggested_rate:
+                    tmp_dict['rate'] = f"+{suggested_rate}%" if suggested_rate >= 0 else f"{suggested_rate}%"
+                    logger.debug(f"[Prosody] Line={line_key} suggested_rate={tmp_dict['rate']} style={tmp_dict['prosody'].get('style_tags')}")
+                logger.debug(
+                    f"[LocalRef] Line={line_key} speaker={local_ref.get('speaker')} "
+                    f"ref={Path(local_ref.get('wav', '')).name if local_ref.get('wav') else ''} "
+                    f"window={local_ref.get('start_ms')}->{local_ref.get('end_ms')}"
+                )
             # 克隆类型 TTS: 设置 ref_wav
             if voice in ('clone', 'auto-match') and self.cfg.tts_type in SUPPORT_CLONE:
                 # Step 5 优先: 按 speaker 复用 extract_speaker_refs 提前提取好的参考音频
                 ref = None
                 if spk_ref_map and spk_list and i < len(spk_list):
                     ref = spk_ref_map.get(spk_list[i])
-                if ref and Path(ref['wav']).exists():
+                if local_ref and local_ref.get('wav') and Path(local_ref['wav']).exists():
+                    tmp_dict['ref_wav'] = local_ref['wav']
+                    if local_ref.get('text'):
+                        tmp_dict['ref_text'] = local_ref['text']
+                elif ref and Path(ref['wav']).exists():
                     tmp_dict['ref_wav'] = ref['wav']
                     # ref_text 用 speaker 参考片段的合并原文（即 ref_wav 对应文本），而非当前字幕行
                     if ref.get('text'):

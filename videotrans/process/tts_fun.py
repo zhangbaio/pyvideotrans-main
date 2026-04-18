@@ -96,6 +96,29 @@ def qwen3tts_fun(
         _prompt_cache[cache_key] = items[0]
         return items[0]
 
+    def _apply_rate_to_file(file_path, rate_text):
+        if not rate_text or rate_text in ('+0%', '0%', '0'):
+            return
+        try:
+            factor = 1.0 + float(str(rate_text).replace('%', '')) / 100.0
+        except Exception:
+            return
+        if factor <= 0 or abs(factor - 1.0) < 0.01:
+            return
+        tmp_out = file_path + '.tempo.wav'
+        try:
+            tools.runffmpeg([
+                '-y', '-i', file_path, '-filter:a', f'atempo={factor:.3f}', tmp_out
+            ], force_cpu=True)
+            if Path(tmp_out).exists():
+                shutil.move(tmp_out, file_path)
+        except Exception as e:
+            logger.warning(f'Qwen3-TTS 调整语速失败 {file_path}: {e}')
+            try:
+                Path(tmp_out).unlink(missing_ok=True)
+            except Exception:
+                pass
+
     # 同 speaker 批量合成: MPS 上 batch=4 实测 1.88x 加速 (RTF 8.24→4.15)
     # CUDA 收益更大, CPU 基本等效; 保守上限 4 防 MPS OOM
     MAX_BATCH = 4
@@ -147,6 +170,7 @@ def qwen3tts_fun(
                     text=text, language=language, speaker=speaker, instruct=prompt,
                 )
                 sf.write(filename, wavs[0], sr)
+                _apply_rate_to_file(filename, it.get('rate'))
                 i += 1
                 continue
 
@@ -170,7 +194,7 @@ def qwen3tts_fun(
                 else f'{batch_src_idx[0]+1}/{_len}'
             _write_log(logs_file, json.dumps({
                 "type": "logs",
-                "text": f'{tag} {role} batch={len(batch_texts)}'
+                "text": f'{tag} {role} batch={len(batch_texts)} ref={Path(wavfile).name} rate={queue_tts[batch_src_idx[0]].get("rate", "+0%")}'
             }))
 
             wavs, sr = BASE_OBJ.generate_voice_clone(
@@ -179,8 +203,9 @@ def qwen3tts_fun(
                 voice_clone_prompt=[prompt_item] * len(batch_texts),
             )
             # wavs 是 list[np.ndarray], 与 batch_texts 一一对应
-            for fn, w in zip(batch_filenames, wavs):
+            for src_idx, fn, w in zip(batch_src_idx, batch_filenames, wavs):
                 sf.write(fn, w, sr)
+                _apply_rate_to_file(fn, queue_tts[src_idx].get('rate'))
 
             i = j
         return True, None

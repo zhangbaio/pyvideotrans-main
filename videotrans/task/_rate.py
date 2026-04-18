@@ -456,14 +456,24 @@ class SpeedRate:
                 mode_log = "Both"
                 if dubb_dur > source_dur:
                     ratio = dubb_dur / source_dur
-                    if ratio <= 1.2:
-                        audio_target = source_dur
-                        video_target = source_dur
-                    else:
-                        diff = dubb_dur - source_dur
-                        joint_target = int(source_dur + (diff / 2))
+                    max_video_target = int(source_dur * self.max_video_pts_rate)
+                    if ratio <= 1.12:
+                        joint_target = min(dubb_dur, max_video_target)
                         audio_target = joint_target
                         video_target = joint_target
+                        mode_log = "Both/ProsodyPreserve"
+                    elif ratio <= 1.35:
+                        diff = dubb_dur - source_dur
+                        joint_target = min(int(source_dur + (diff * 0.75)), max_video_target)
+                        audio_target = joint_target
+                        video_target = joint_target
+                        mode_log = "Both/ProsodyBalanced"
+                    else:
+                        diff = dubb_dur - source_dur
+                        joint_target = min(int(source_dur + (diff * 0.6)), max_video_target)
+                        audio_target = joint_target
+                        video_target = joint_target
+                        mode_log = "Both/ProsodyLimited"
             
 
 
