@@ -170,6 +170,7 @@ class TransCreate(BaseTask):
         # 记录最终使用的配置信息
         logger.debug(f"最终配置信息：{self.cfg=}")
         # 禁止修改字幕
+        self._load_lipsync_config()
         self._signal(text="forbid", type="disabled_edit")
 
         # 开启一个线程显示进度
@@ -183,6 +184,251 @@ class TransCreate(BaseTask):
             threading.Thread(target=runing, daemon=True).start()
 
     # 1. 预处理，分离音视频、分离人声等
+    def _load_lipsync_config(self):
+        def _to_bool(val, default=False):
+            if isinstance(val, bool):
+                return val
+            if val is None:
+                return default
+            if isinstance(val, str):
+                return val.strip().lower() in {'1', 'true', 'yes', 'on'}
+            return bool(val)
+
+        def _to_int(val, default):
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                return default
+
+        home_dir = Path.home()
+        auto_lipsync = (
+            self._pick_existing_dir(Path(ROOT_DIR).parent / 'MuseTalk-main') is not None
+            and self._pick_existing_file(
+                home_dir / 'miniconda3' / 'envs' / 'MuseTalk' / 'python.exe',
+                home_dir / 'anaconda3' / 'envs' / 'MuseTalk' / 'python.exe',
+                home_dir / 'miniconda3' / 'envs' / 'MuseTalk' / 'bin' / 'python',
+                home_dir / 'anaconda3' / 'envs' / 'MuseTalk' / 'bin' / 'python',
+            ) is not None
+        )
+        self.cfg.enable_lipsync = _to_bool(params.get('enable_lipsync', auto_lipsync if not self.cfg.enable_lipsync else self.cfg.enable_lipsync), self.cfg.enable_lipsync)
+        self.cfg.lipsync_engine = str(params.get('lipsync_engine', self.cfg.lipsync_engine) or self.cfg.lipsync_engine or 'musetalk').strip().lower()
+        self.cfg.lipsync_model_root = str(params.get('lipsync_model_root', self.cfg.lipsync_model_root) or self.cfg.lipsync_model_root or '').strip()
+        self.cfg.lipsync_python = str(params.get('lipsync_python', self.cfg.lipsync_python) or self.cfg.lipsync_python or '').strip()
+        self.cfg.lipsync_ffmpeg_dir = str(params.get('lipsync_ffmpeg_dir', self.cfg.lipsync_ffmpeg_dir) or self.cfg.lipsync_ffmpeg_dir or '').strip()
+        self.cfg.lipsync_version = str(params.get('lipsync_version', self.cfg.lipsync_version) or self.cfg.lipsync_version or 'v15').strip().lower()
+        self.cfg.lipsync_batch_size = max(1, _to_int(params.get('lipsync_batch_size', self.cfg.lipsync_batch_size), self.cfg.lipsync_batch_size))
+        self.cfg.lipsync_bbox_shift = _to_int(params.get('lipsync_bbox_shift', self.cfg.lipsync_bbox_shift), self.cfg.lipsync_bbox_shift)
+        self.cfg.lipsync_extra_margin = max(0, _to_int(params.get('lipsync_extra_margin', self.cfg.lipsync_extra_margin), self.cfg.lipsync_extra_margin))
+        self.cfg.lipsync_audio_padding_length_left = max(0, _to_int(params.get('lipsync_audio_padding_length_left', self.cfg.lipsync_audio_padding_length_left), self.cfg.lipsync_audio_padding_length_left))
+        self.cfg.lipsync_audio_padding_length_right = max(0, _to_int(params.get('lipsync_audio_padding_length_right', self.cfg.lipsync_audio_padding_length_right), self.cfg.lipsync_audio_padding_length_right))
+        self.cfg.lipsync_use_fp16 = _to_bool(params.get('lipsync_use_fp16', self.cfg.lipsync_use_fp16), self.cfg.lipsync_use_fp16)
+        self.cfg.lipsync_parsing_mode = str(params.get('lipsync_parsing_mode', self.cfg.lipsync_parsing_mode) or self.cfg.lipsync_parsing_mode or 'jaw').strip()
+        self.cfg.lipsync_left_cheek_width = max(1, _to_int(params.get('lipsync_left_cheek_width', self.cfg.lipsync_left_cheek_width), self.cfg.lipsync_left_cheek_width))
+        self.cfg.lipsync_right_cheek_width = max(1, _to_int(params.get('lipsync_right_cheek_width', self.cfg.lipsync_right_cheek_width), self.cfg.lipsync_right_cheek_width))
+
+    def _pick_existing_file(self, *candidates):
+        for candidate in candidates:
+            if not candidate:
+                continue
+            p = Path(candidate).expanduser()
+            if p.is_file():
+                return p.resolve().as_posix()
+        return None
+
+    def _pick_existing_dir(self, *candidates):
+        for candidate in candidates:
+            if not candidate:
+                continue
+            p = Path(candidate).expanduser()
+            if p.is_dir():
+                return p.resolve().as_posix()
+        return None
+
+    def _resolve_musetalk_setup(self):
+        home_dir = Path.home()
+        root_candidates = [
+            self.cfg.lipsync_model_root,
+            os.environ.get('PYVIDEOTRANS_MUSETALK_ROOT'),
+            Path(ROOT_DIR).parent / 'MuseTalk-main',
+        ]
+        musetalk_root = self._pick_existing_dir(*root_candidates)
+        if not musetalk_root:
+            raise RuntimeError('MuseTalk root not found. Configure params.lipsync_model_root.')
+
+        root_path = Path(musetalk_root)
+        inference_script = root_path / 'scripts' / 'inference.py'
+        if not inference_script.exists():
+            raise RuntimeError(f'MuseTalk inference script not found: {inference_script.as_posix()}')
+
+        python_candidates = [
+            self.cfg.lipsync_python,
+            os.environ.get('PYVIDEOTRANS_MUSETALK_PYTHON'),
+            home_dir / 'miniconda3' / 'envs' / 'MuseTalk' / 'python.exe',
+            home_dir / 'anaconda3' / 'envs' / 'MuseTalk' / 'python.exe',
+            home_dir / 'miniconda3' / 'envs' / 'MuseTalk' / 'bin' / 'python',
+            home_dir / 'anaconda3' / 'envs' / 'MuseTalk' / 'bin' / 'python',
+        ]
+        python_exe = self._pick_existing_file(*python_candidates)
+        if not python_exe:
+            raise RuntimeError('MuseTalk python interpreter not found. Configure params.lipsync_python.')
+
+        env_root = Path(python_exe).resolve().parent.parent
+        ffmpeg_candidates = [
+            self.cfg.lipsync_ffmpeg_dir,
+            os.environ.get('PYVIDEOTRANS_LIPSYNC_FFMPEG_DIR'),
+            env_root / 'Library' / 'bin',
+            Path(ROOT_DIR).parent / 'video-subtitle-remover-main' / 'backend' / 'ffmpeg' / 'win_x64',
+            Path(ROOT_DIR) / 'ffmpeg',
+        ]
+        ffmpeg_dir = self._pick_existing_dir(*ffmpeg_candidates)
+        if not ffmpeg_dir:
+            ffmpeg_cmd = shutil.which('ffmpeg')
+            if ffmpeg_cmd:
+                ffmpeg_dir = Path(ffmpeg_cmd).resolve().parent.as_posix()
+        if not ffmpeg_dir:
+            raise RuntimeError('MuseTalk ffmpeg directory not found. Configure params.lipsync_ffmpeg_dir.')
+        ffmpeg_name = 'ffmpeg.exe' if sys.platform == 'win32' else 'ffmpeg'
+        if not Path(ffmpeg_dir, ffmpeg_name).exists():
+            raise RuntimeError(f'MuseTalk ffmpeg binary not found in: {ffmpeg_dir}')
+
+        unet_dir = root_path / 'models' / ('musetalkV15' if self.cfg.lipsync_version == 'v15' else 'musetalk')
+        model_file = unet_dir / ('unet.pth' if self.cfg.lipsync_version == 'v15' else 'pytorch_model.bin')
+        config_file = unet_dir / 'musetalk.json'
+        if not model_file.exists() or not config_file.exists():
+            raise RuntimeError(f'MuseTalk model files missing under: {unet_dir.as_posix()}')
+
+        return {
+            'root': root_path.as_posix(),
+            'python': python_exe,
+            'ffmpeg_dir': ffmpeg_dir,
+            'unet_model': model_file.as_posix(),
+            'unet_config': config_file.as_posix(),
+        }
+
+    def _run_musetalk_lipsync(self):
+        setup = self._resolve_musetalk_setup()
+        input_video = Path(self.cfg.novoice_mp4).resolve().as_posix()
+        input_audio = Path(self.cfg.target_wav).resolve().as_posix()
+        if not tools.vail_file(input_video):
+            raise RuntimeError(f'Lip sync input video missing: {input_video}')
+        if not tools.vail_file(input_audio):
+            raise RuntimeError(f'Lip sync input audio missing: {input_audio}')
+
+        result_dir = Path(self.cfg.cache_folder) / 'musetalk_results'
+        result_dir.mkdir(parents=True, exist_ok=True)
+        output_name = 'lipsync.mp4'
+        output_path = result_dir / self.cfg.lipsync_version / output_name
+        infer_cfg = result_dir / 'infer.yaml'
+        infer_cfg.write_text(
+            "\n".join([
+                "task_0:",
+                f'  video_path: "{input_video}"',
+                f'  audio_path: "{input_audio}"',
+                f'  result_name: "{output_name}"',
+                f'  bbox_shift: {self.cfg.lipsync_bbox_shift}',
+                "",
+            ]),
+            encoding='utf-8'
+        )
+
+        cmd = [
+            setup['python'],
+            '-m',
+            'scripts.inference',
+            '--inference_config',
+            infer_cfg.as_posix(),
+            '--result_dir',
+            result_dir.as_posix(),
+            '--unet_model_path',
+            setup['unet_model'],
+            '--unet_config',
+            setup['unet_config'],
+            '--version',
+            self.cfg.lipsync_version,
+            '--ffmpeg_path',
+            setup['ffmpeg_dir'],
+            '--batch_size',
+            str(self.cfg.lipsync_batch_size),
+            '--output_vid_name',
+            output_name,
+            '--bbox_shift',
+            str(self.cfg.lipsync_bbox_shift),
+            '--extra_margin',
+            str(self.cfg.lipsync_extra_margin),
+            '--audio_padding_length_left',
+            str(self.cfg.lipsync_audio_padding_length_left),
+            '--audio_padding_length_right',
+            str(self.cfg.lipsync_audio_padding_length_right),
+            '--parsing_mode',
+            self.cfg.lipsync_parsing_mode,
+            '--left_cheek_width',
+            str(self.cfg.lipsync_left_cheek_width),
+            '--right_cheek_width',
+            str(self.cfg.lipsync_right_cheek_width),
+        ]
+        if self.cfg.lipsync_use_fp16 and self.cfg.is_cuda:
+            cmd.append('--use_float16')
+
+        env = os.environ.copy()
+        env['PYTHONUTF8'] = '1'
+        env['PYTHONIOENCODING'] = 'utf-8'
+        env['PATH'] = os.pathsep.join([
+            str(Path(setup['python']).parent),
+            str(Path(setup['python']).parent.parent / 'Library' / 'bin'),
+            setup['ffmpeg_dir'],
+            env.get('PATH', ''),
+        ])
+        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+        logger.debug(f'[MuseTalk-CMD]\n{" ".join(cmd)}\n')
+        proc = subprocess.run(
+            cmd,
+            cwd=setup['root'],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            creationflags=creationflags,
+        )
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or '').strip()
+            if detail:
+                detail = "\n".join(detail.splitlines()[-20:])
+            raise RuntimeError(f'MuseTalk failed with code {proc.returncode}: {detail}')
+        if not output_path.exists():
+            raise RuntimeError(f'MuseTalk output not found: {output_path.as_posix()}')
+
+        self.cfg.novoice_mp4 = output_path.as_posix()
+        self.video_time = tools.get_video_duration(self.cfg.novoice_mp4)
+        logger.debug(f'[MuseTalk] generated {self.cfg.novoice_mp4}')
+        return True
+
+    def lipsync(self) -> None:
+        if self._exit():
+            return
+        if not self.cfg.enable_lipsync or self.is_audio_trans:
+            return
+        if not self.shoud_dubbing or self.cfg.app_mode == 'tiqu':
+            return
+        if self.cfg.lipsync_engine != 'musetalk':
+            logger.debug(f'[LipSync] skip unsupported engine: {self.cfg.lipsync_engine}')
+            return
+        if not tools.vail_file(self.cfg.novoice_mp4) or not tools.vail_file(self.cfg.target_wav):
+            logger.debug('[LipSync] skip because input video or audio is missing')
+            return
+
+        self._stage_start("lipsync")
+        self._signal(text='Starting lip sync with MuseTalk')
+        self.precent += 2
+        try:
+            self._run_musetalk_lipsync()
+        except Exception:
+            self.hasend = True
+            raise
+        self._signal(text='Lip sync finished')
+        self._stage_end("lipsync")
+
     def prepare(self) -> None:
         if self._exit(): return
         self._stage_start("prepare")
@@ -593,7 +839,25 @@ class TransCreate(BaseTask):
                 logger.error(f'二次识别配音文件失败，原因未知')
                 return
             # 覆盖
-            shutil.copy2(outsrt_file, self.cfg.target_sub)
+            try:
+                translated_subtitles = tools.get_subtitle_from_srt(self.cfg.target_sub, is_file=True)
+                recognized_subtitles = tools.get_subtitle_from_srt(outsrt_file, is_file=True)
+            except Exception as merge_error:
+                logger.warning(f'二次识别结果无法用于时间轴合并，保留原翻译字幕: {merge_error}')
+            else:
+                if len(translated_subtitles) == len(recognized_subtitles) and len(translated_subtitles) > 0:
+                    merged_subtitles = []
+                    for idx, rec_item in enumerate(recognized_subtitles):
+                        merged_item = copy.deepcopy(rec_item)
+                        merged_item['text'] = translated_subtitles[idx].get('text', rec_item.get('text', '')).strip()
+                        merged_subtitles.append(merged_item)
+                    self._save_srt_target(merged_subtitles, self.cfg.target_sub)
+                    logger.debug('二次识别仅更新时间轴，已保留原始翻译字幕文本')
+                else:
+                    logger.warning(
+                        f'二次识别行数与翻译字幕不一致，保留原翻译字幕不覆盖: '
+                        f'{len(translated_subtitles)=}, {len(recognized_subtitles)=}'
+                    )
             self._signal(text='STT 2 pass end')
             self._stage_end("recogn2pass")
             logger.debug('二次识别成功完成')

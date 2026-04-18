@@ -120,7 +120,10 @@ class Worker(QThread):
             
             if not self._exit():
                 trk.recogn2pass()
-                
+
+            if not self._exit():
+                trk.lipsync()
+                 
             if not self._exit():
                 trk.assembling()
             

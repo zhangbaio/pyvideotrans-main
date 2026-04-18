@@ -39,6 +39,7 @@ class MultVideo(QThread):
                     trk.dubbing()
                     trk.align()
                     trk.recogn2pass()
+                    trk.lipsync()
                     trk.assembling()
                     trk.task_done()
                     self.uito.emit(json.dumps({"text": tr('Succeed'), "type": 'succeed', 'uuid': it['uuid']}))

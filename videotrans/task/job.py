@@ -286,6 +286,7 @@ class WorkerRegcon2Pass(QThread):
             try:
                 print(f'进入二次识别阶段')
                 trk.recogn2pass()
+                trk.lipsync()
                 if trk.shoud_hebing:
                     app_cfg.assemb_queue.put_nowait(trk)
                 else:

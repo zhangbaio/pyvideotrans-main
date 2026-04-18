@@ -317,7 +317,7 @@ class AppSettings:
             "zijiehuoshan_model": Zijiehuoshan_Model,
             "model_list": Whisper_Models,
             "max_audio_speed_rate": 100,
-            "max_video_pts_rate": 10,
+            "max_video_pts_rate": 2.5,
             "threshold": 0.35,
             "min_speech_duration_ms": 250,
             "max_speech_duration_s": 15,
@@ -695,7 +695,22 @@ class AppParams:
             "dubb_hecheng_rate": 0,
             "dubb_pitch_rate": 0,
             "dubb_volume_rate": 0,
-            "recogn2pass": True
+            "recogn2pass": True,
+            "enable_lipsync": False,
+            "lipsync_engine": "musetalk",
+            "lipsync_model_root": "",
+            "lipsync_python": "",
+            "lipsync_ffmpeg_dir": "",
+            "lipsync_version": "v15",
+            "lipsync_batch_size": 4,
+            "lipsync_bbox_shift": 0,
+            "lipsync_extra_margin": 10,
+            "lipsync_audio_padding_length_left": 2,
+            "lipsync_audio_padding_length_right": 2,
+            "lipsync_use_fp16": True,
+            "lipsync_parsing_mode": "jaw",
+            "lipsync_left_cheek_width": 90,
+            "lipsync_right_cheek_width": 90
         }
 
     def _apply_dict(self, data: Dict):

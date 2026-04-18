@@ -249,6 +249,8 @@ class SpeedRate:
     MIN_CLIP_DURATION_MS = 40
     AUDIO_SAMPLE_RATE = 48000
     AUDIO_CHANNELS = 2
+    MAX_SAFE_VIDEO_PTS_RATE = 2.5
+    EXTREME_DUB_RATIO = 3.0
 
     def __init__(self,
                  *,
@@ -282,7 +284,13 @@ class SpeedRate:
         self.target_audio = target_audio
 
         self.max_audio_speed_rate = float(settings.get('max_audio_speed_rate', 100))
-        self.max_video_pts_rate = float(settings.get('max_video_pts_rate', 10))
+        self.max_video_pts_rate = float(settings.get('max_video_pts_rate', self.MAX_SAFE_VIDEO_PTS_RATE))
+        if self.max_video_pts_rate > self.MAX_SAFE_VIDEO_PTS_RATE:
+            logger.warning(
+                f"[SpeedRate] max_video_pts_rate={self.max_video_pts_rate} is too high, "
+                f"clamping to safe limit {self.MAX_SAFE_VIDEO_PTS_RATE}"
+            )
+            self.max_video_pts_rate = self.MAX_SAFE_VIDEO_PTS_RATE
 
         self.audio_data = [] 
         self.video_for_clips = [] 
@@ -447,17 +455,31 @@ class SpeedRate:
             elif not self.shoud_audiorate and self.shoud_videorate:
                 mode_log = "Only Video"
                 if dubb_dur > source_dur:
-                    video_target = dubb_dur
-                    pts = video_target / source_dur
-                    if pts > self.max_video_pts_rate:
-                        video_target = int(source_dur * self.max_video_pts_rate)
+                    ratio = dubb_dur / source_dur
+                    max_video_target = int(source_dur * self.max_video_pts_rate)
+                    if ratio >= self.EXTREME_DUB_RATIO:
+                        video_target = max_video_target
+                        audio_target = max_video_target
+                        mode_log = "Only Video/HardClamp+AudioFix"
+                    else:
+                        video_target = dubb_dur
+                        pts = video_target / source_dur
+                        if pts > self.max_video_pts_rate:
+                            video_target = max_video_target
+                            audio_target = max_video_target
+                            mode_log = "Only Video/Clamped+AudioFix"
 
             elif self.shoud_audiorate and self.shoud_videorate:
                 mode_log = "Both"
                 if dubb_dur > source_dur:
                     ratio = dubb_dur / source_dur
                     max_video_target = int(source_dur * self.max_video_pts_rate)
-                    if ratio <= 1.12:
+                    if ratio >= self.EXTREME_DUB_RATIO:
+                        joint_target = max_video_target
+                        audio_target = joint_target
+                        video_target = joint_target
+                        mode_log = "Both/HardClamp"
+                    elif ratio <= 1.12:
                         joint_target = min(dubb_dur, max_video_target)
                         audio_target = joint_target
                         video_target = joint_target
@@ -478,7 +500,7 @@ class SpeedRate:
 
 
             # 注册任务
-            if self.shoud_audiorate and audio_target < dubb_dur:
+            if audio_target < dubb_dur:
                 self.audio_data.append({
                     "filename": it['filename'],
                     "dubb_time": dubb_dur,
@@ -505,11 +527,18 @@ class SpeedRate:
         logger.debug(f"[Audio] 开始处理 {len(self.audio_data)} 个音频变速任务")
         all_task = []
         for d in self.audio_data:
-            all_task.append(GlobalProcessManager.submit_task_cpu(
-                _change_speed_rubberband, 
-                input_path=d['filename'], 
-                target_duration=d['target_time']
-            ))
+            if HAS_RUBBERBAND and self.audio_speed_rubberband:
+                all_task.append(GlobalProcessManager.submit_task_cpu(
+                    _change_speed_rubberband,
+                    input_path=d['filename'],
+                    target_duration=d['target_time']
+                ))
+            else:
+                all_task.append(GlobalProcessManager.submit_task_cpu(
+                    tools.precise_speed_up_audio,
+                    file_path=d['filename'],
+                    target_duration_ms=d['target_time']
+                ))
         for task in all_task:
             try: task.result()
             except: pass
