@@ -18,6 +18,29 @@ from videotrans.configure.config import ROOT_DIR,tr,app_cfg,settings,params,TEMP
 from videotrans.util import tools
 
 class SpeakerAssignmentDialog(QDialog):
+    _AUTO_SKIP_VOICES = frozenset({'No', 'clone', 'auto-match', ''})
+
+    def _describe_auto_match(self, spk_id: str, voice_name: str) -> str:
+        detail = self.auto_match_detail.get(spk_id, {}) if isinstance(self.auto_match_detail, dict) else {}
+        method = detail.get('method', '')
+        if method == 'embedding':
+            score = detail.get('score')
+            if score is not None:
+                return f'{voice_name} [embedding {score:.2f}]'
+            return f'{voice_name} [embedding]'
+        if method == 'gender':
+            return f'{voice_name} [gender]'
+        if method == 'round_robin':
+            return f'{voice_name} [fallback]'
+        return voice_name
+
+    def _speaker_label_text(self, spk_id: str, voice_name: str) -> str:
+        if not voice_name:
+            return ''
+        if self.auto_match_mode:
+            return self._describe_auto_match(spk_id, voice_name)
+        return voice_name
+
     def __init__(
             self,
             parent=None,
@@ -27,7 +50,8 @@ class SpeakerAssignmentDialog(QDialog):
             cache_folder=None,
             target_language="en",
             tts_type=0,
-            video_path: str = ""
+            video_path: str = "",
+            default_role: str = "",
     ):
         super().__init__()
         self.parent = parent
@@ -37,6 +61,12 @@ class SpeakerAssignmentDialog(QDialog):
         self.target_language = target_language
         self.tts_type = tts_type
         self.video_path = video_path or ""
+        self.default_role = (default_role or '').strip()
+        self.clone_mode = self.default_role == 'clone'
+        self.auto_match_mode = self.default_role == 'auto-match'
+        self.managed_role_mode = self.clone_mode or self.auto_match_mode
+        self.default_role_text = self.default_role if self.default_role else tr('Default Role')
+        self.auto_match_detail = {}
 
         # --- 声音克隆库 (voice_library) 集成 ---
         # drama_dir: 默认用视频父目录名；无 video_path 时退化为 None (完全不启用库)
@@ -78,6 +108,16 @@ class SpeakerAssignmentDialog(QDialog):
             logger.exception(f'获取说话人id失败:{e}', exc_info=True)
 
         self.all_voices = all_voices or []
+        try:
+            detail_path = Path(f'{self.cache_folder}/auto_match_detail.json') if self.cache_folder else None
+            if detail_path and detail_path.exists():
+                self.auto_match_detail = json.loads(detail_path.read_text(encoding='utf-8'))
+        except Exception as e:
+            logger.warning(f'[voice_matcher] 璇?auto_match_detail.json 澶辫触: {e}')
+        if self.auto_match_mode and self.speakers and isinstance(self.auto_match_detail, dict):
+            for spk_id, detail in self.auto_match_detail.items():
+                if spk_id in self.speakers:
+                    self.speakers[spk_id] = detail.get('voice')
 
         # L2: 预读 spk_to_character.json (若 diariz 阶段已做自动声纹匹配)
         # 用于 _create_speaker_assignment_area 里预填输入框/下拉
@@ -88,7 +128,7 @@ class SpeakerAssignmentDialog(QDialog):
                 _sm_data = json.loads(_sm_path.read_text(encoding='utf-8'))
                 self.auto_matched_spk2name = dict(_sm_data.get('mapping', {}) or {})
                 # 根据匹配到的角色, 同步回填 fixed_voice (用户打开对话框就看到最终效果)
-                if self.drama_dir is not None and self.auto_matched_spk2name:
+                if self.drama_dir is not None and self.auto_matched_spk2name and not self.managed_role_mode:
                     try:
                         from videotrans.util.voice_library import get_fixed_voice
                         for spk_id, ch_name in self.auto_matched_spk2name.items():
@@ -104,7 +144,7 @@ class SpeakerAssignmentDialog(QDialog):
         # 自动为每个说话人轮询分配一个固定音色 (用户仍可在 UI 里手动改)
         # 设计 (Linus): 只有 (a) 检测到多说话人 (b) 音色池非空 时才触发
         # 不偷偷开 diariz, 不替换用户已手动分配的值
-        if self.speakers:
+        if self.speakers and not self.managed_role_mode:
             self._auto_assign_speaker_voices()
 
         self.setWindowTitle(tr("zidonghebingmiaohou"))
@@ -396,9 +436,9 @@ class SpeakerAssignmentDialog(QDialog):
             self.table.setItem(row, 2, spk_item)
             
             # 第3列：Role（只读，显示用）
-            role_item = QTableWidgetItem(tr('Default Role'))
+            role_item = QTableWidgetItem(self.default_role_text if self.clone_mode else tr('Default Role'))
             role_item.setFlags(Qt.ItemIsEnabled)
-            role_item.setForeground(QColor("#ff4d4d"))
+            role_item.setForeground(QColor("#88ccff") if self.clone_mode else QColor("#ff4d4d"))
             self.table.setItem(row, 3, role_item)
             
             # 第4列：Time（只读）
@@ -433,8 +473,12 @@ class SpeakerAssignmentDialog(QDialog):
         
         # 底部按钮
         assignable_voices = ['No'] + self._candidate_voices()
+        if self.clone_mode and self.default_role and self.default_role not in assignable_voices:
+            assignable_voices.append(self.default_role)
         self.subtitle_combo = QComboBox()
         self.subtitle_combo.addItems(assignable_voices)
+        if self.clone_mode and self.default_role:
+            self.subtitle_combo.setCurrentText(self.default_role)
         self.bottom_button_container_layout.addWidget(self.subtitle_combo)
 
         assign_button = QPushButton(tr("Assign roles to selected subtitles"))
@@ -448,7 +492,16 @@ class SpeakerAssignmentDialog(QDialog):
         self.listen_button.clicked.connect(self.listen_dubbing)
         self.bottom_button_container_layout.addWidget(self.listen_button)
         
-        labe_tips=QLabel(tr('If not specified separately'))
+        if self.managed_role_mode:
+            self.subtitle_combo.setDisabled(True)
+            assign_button.setDisabled(True)
+            self.listen_button.hide()
+            if self.auto_match_mode:
+                labe_tips=QLabel(tr('Global auto-match is active; speaker roles are resolved automatically here'))
+            else:
+                labe_tips=QLabel(tr('Global clone is active; fixed role assignment is disabled here'))
+        else:
+            labe_tips=QLabel(tr('If not specified separately'))
         
         self.bottom_button_container_layout.addWidget(labe_tips)
         self.bottom_button_container_layout.addStretch()
@@ -458,7 +511,12 @@ class SpeakerAssignmentDialog(QDialog):
         group = QGroupBox("")
         group.setStyleSheet("QGroupBox{border:none;}")
         layout = QVBoxLayout(group)
-        label_tips = QLabel(tr("Assign a timbre to each speaker"))
+        label_tips = QLabel(
+            tr("Global clone is active; speakers will use the cloned reference voice")
+            if self.clone_mode else
+            tr("Global auto-match is active; each speaker will use the most similar local Qwen3 voice")
+            if self.auto_match_mode else tr("Assign a timbre to each speaker")
+        )
         label_tips.setStyleSheet("color:#aaaaaa")
         layout.addWidget(label_tips)
 
@@ -493,11 +551,13 @@ class SpeakerAssignmentDialog(QDialog):
             check.setStyleSheet("color: #dddddd;")
 
             # 显示自动分配后的初始音色 (若有)
-            initial_voice = self.speakers.get(spk_id) or ''
-            label = QLabel(initial_voice)
+            initial_voice = self.speakers.get(spk_id) or (self.default_role_text if self.managed_role_mode else '')
+            label = QLabel(self._speaker_label_text(spk_id, initial_voice))
             label.setMinimumWidth(80)
-            label_color = "#66dd99" if spk_id in self.auto_assigned_speakers and initial_voice else "#ffcccc"
+            label_color = "#88ccff" if self.managed_role_mode and initial_voice else "#66dd99" if spk_id in self.auto_assigned_speakers and initial_voice else "#ffcccc"
             label.setStyleSheet(f"color: {label_color};")
+            if self.auto_match_mode and initial_voice:
+                label.setToolTip(self._speaker_label_text(spk_id, initial_voice))
 
             col = 0
             grid_layout.addWidget(check, i, col); col += 1
@@ -541,8 +601,12 @@ class SpeakerAssignmentDialog(QDialog):
 
         bottom_row = QHBoxLayout()
         assignable_voices = ['No'] + self._candidate_voices()
+        if self.managed_role_mode and self.default_role and self.default_role not in assignable_voices:
+            assignable_voices.append(self.default_role)
         self.speaker_combo = QComboBox()
         self.speaker_combo.addItems(assignable_voices)
+        if self.managed_role_mode and self.default_role:
+            self.speaker_combo.setCurrentText(self.default_role)
         
         lbl = QLabel(tr('Dubbing role'))
         lbl.setStyleSheet("color: #dddddd;")
@@ -563,14 +627,20 @@ class SpeakerAssignmentDialog(QDialog):
         reassign_button.setToolTip(tr("Reassign each speaker a distinct voice automatically"))
         bottom_row.addWidget(reassign_button)
 
+        if self.managed_role_mode:
+            self.speaker_combo.setDisabled(True)
+            assign_button.setDisabled(True)
+            if self.auto_match_mode:
+                reassign_button.setText(tr("Auto rematch"))
+            else:
+                reassign_button.setDisabled(True)
+
         bottom_row.addStretch()
 
         layout.addLayout(bottom_row)
         return group
 
     # ---------- 自动分配 ----------
-    _AUTO_SKIP_VOICES = frozenset({'No', 'clone', 'auto-match', ''})
-
     def _candidate_voices(self):
         """从 all_voices 里剔掉不适合自动分配的条目 (No / clone / 空)"""
         return [v for v in self.all_voices if v not in self._AUTO_SKIP_VOICES]
@@ -601,8 +671,11 @@ class SpeakerAssignmentDialog(QDialog):
                 for k, v in (_r or {}).items():
                     if isinstance(v, str):
                         speaker_refs[k] = v
-                    elif isinstance(v, dict) and v.get('ref'):
-                        speaker_refs[k] = v['ref']
+                    elif isinstance(v, dict):
+                        if v.get('ref'):
+                            speaker_refs[k] = v['ref']
+                        elif v.get('wav'):
+                            speaker_refs[k] = v['wav']
         except Exception as e:
             logger.warning(f'[voice_matcher] 读 speaker_refs.json 失败: {e}')
 
@@ -620,15 +693,18 @@ class SpeakerAssignmentDialog(QDialog):
             return
 
         try:
-            from videotrans.util.voice_matcher import match_voices_to_speakers
+            from videotrans.util.voice_matcher import match_voices_to_speakers_verbose
             # speaker_refs 只保留当前对话框 self.speakers 里存在的 spk
             filtered_refs = {k: v for k, v in speaker_refs.items() if k in self.speakers}
-            result = match_voices_to_speakers(
+            matched = match_voices_to_speakers_verbose(
                 speaker_refs=filtered_refs,
                 all_voices=list(self.all_voices or []),
                 tts_type=int(self.tts_type or 0),
                 existing=existing,
             )
+            result = matched.get('mapping', {})
+            if isinstance(matched.get('details'), dict):
+                self.auto_match_detail.update(matched.get('details'))
             for spk_id in self.speakers.keys():
                 if spk_id in result:
                     self.speakers[spk_id] = result[spk_id]
@@ -680,8 +756,9 @@ class SpeakerAssignmentDialog(QDialog):
         self._auto_assign_speaker_voices(force=True)
         # 刷新上方 speaker_labels 显示
         for check, spk_id in self.speaker_checks.items():
-            self.speaker_labels[check].setText(self.speakers.get(spk_id) or '')
-            label_color = "#66dd99" if spk_id in self.auto_assigned_speakers and self.speakers.get(spk_id) else "#ffcccc"
+            current_voice = self.speakers.get(spk_id) or ''
+            self.speaker_labels[check].setText(self._speaker_label_text(spk_id, current_voice))
+            label_color = "#88ccff" if self.managed_role_mode and self.speakers.get(spk_id) else "#66dd99" if spk_id in self.auto_assigned_speakers and self.speakers.get(spk_id) else "#ffcccc"
             self.speaker_labels[check].setStyleSheet(f"color: {label_color};")
         # 刷新表格"配音角色"列
         self._update_role_column()
@@ -695,7 +772,7 @@ class SpeakerAssignmentDialog(QDialog):
             if check.isChecked():
                 self.speakers[spk_id] = role_value
                 self.auto_assigned_speakers.discard(spk_id)
-                self.speaker_labels[check].setText(selected_role if role_value else "")
+                self.speaker_labels[check].setText(self._speaker_label_text(spk_id, selected_role if role_value else ""))
                 self.speaker_labels[check].setStyleSheet("color: #ffcccc;")
                 check.setChecked(False)
         
@@ -709,12 +786,19 @@ class SpeakerAssignmentDialog(QDialog):
             role = data.get('role', '')
             if not role and data['spk']:
                 role = self.speakers.get(data['spk'], '')
+            if not role and self.managed_role_mode:
+                role = self.default_role_text
             
             item = self.table.item(row, 3)
             if item:
-                item.setText(role if role else tr('Default Role'))
+                display_role = role if role else self.default_role_text
+                if self.auto_match_mode and role:
+                    display_role = self._describe_auto_match(data.get('spk', ''), role)
+                item.setText(display_role)
                 if data.get('role'):
                     item.setForeground(QColor("#ffcccc"))
+                elif self.managed_role_mode and role:
+                    item.setForeground(QColor("#88ccff"))
                 elif role and data.get('spk') in self.auto_assigned_speakers:
                     item.setForeground(QColor("#66dd99"))
                 elif role:
@@ -842,7 +926,7 @@ class SpeakerAssignmentDialog(QDialog):
 
             # 角色保存逻辑
             role = data.get('role', '')
-            if not role and self.speakers and data['spk']:
+            if not role and self.speakers and data['spk'] and not self.managed_role_mode:
                 role = self.speakers.get(data['spk'], '')
 
             if role:

@@ -13,7 +13,7 @@ def get_speech_timestamp_silero(input_wav,
                          max_speech_duration_ms=None,
                          min_silent_duration_ms=None):
         # 防止填写错误
-        min_speech_duration_ms=0#int(max(min_speech_duration_ms,0))
+        min_speech_duration_ms=int(max(min_speech_duration_ms or 0,0))
         min_silent_duration_ms=int(max(min_silent_duration_ms,50))
         max_speech_duration_ms=int(min(max(max_speech_duration_ms,min_speech_duration_ms+1000),30000))
         logger.debug(f'[silero-VAD]Fix:VAD断句参数：{threshold=},{min_speech_duration_ms=}ms,{max_speech_duration_ms=}ms,{min_silent_duration_ms=}ms')

@@ -5,7 +5,7 @@
 import re
 
 from videotrans.util import gpus
-from videotrans.configure.config import logger, ROOT_DIR, defaulelang
+from videotrans.configure.config import logger, ROOT_DIR, defaulelang, settings
 
 
 def openai_whisper(
@@ -429,13 +429,22 @@ def faster_whisper(
                 raws.append(tmp)
                 _write_log(logs_file, json.dumps({"type": "subtitle", "text": f'[{i}] {text}\n'}))
         else:
+            vad_threshold = float(settings.get('threshold', 0.35))
+            vad_min_silence = max(int(float(settings.get('min_silence_duration_ms', 500))), 50)
+            vad_min_speech = max(int(float(settings.get('min_speech_duration_ms', 250))), 0)
+            vad_max_speech = max(float(settings.get('max_speech_duration_s', 15)), 1.0)
             segments, info = model.transcribe(
                 audio_file,
                 beam_size=beam_size,
                 best_of=best_of,
                 condition_on_previous_text=condition_on_previous_text,
                 vad_filter=True,
-                vad_parameters=dict(min_silence_duration_ms=140,min_speech_duration_ms=0),
+                vad_parameters=dict(
+                    threshold=vad_threshold,
+                    min_silence_duration_ms=vad_min_silence,
+                    min_speech_duration_ms=vad_min_speech,
+                    max_speech_duration_s=vad_max_speech,
+                ),
                 no_speech_threshold=no_speech_threshold,
                 # clip_timestamps="0",  # clip_timestamps,
                 word_timestamps=True,
@@ -446,6 +455,12 @@ def faster_whisper(
                 compression_ratio_threshold=compression_ratio_threshold,
                 language=detect_language.split('-')[0] if detect_language and detect_language != 'auto' else None,
                 initial_prompt=prompt if prompt else None
+            )
+            logger.debug(
+                f'[faster-whisper VAD] threshold={vad_threshold}, '
+                f'min_speech_duration_ms={vad_min_speech}, '
+                f'min_silence_duration_ms={vad_min_silence}, '
+                f'max_speech_duration_s={vad_max_speech}'
             )
             logger.debug(f'faster-whisper模式下，对{model_name}模型返回的断句结果重新修正')
             texts = []

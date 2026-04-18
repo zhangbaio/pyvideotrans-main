@@ -230,6 +230,7 @@ def get_qwenttslocal_rolelist():
     voices={
         "No":"No",
         "clone":"clone",
+        "auto-match":"auto-match",
         "Vivian":"Vivian",
         "Serena":"Serena",
         "Uncle_fu":"Uncle_fu",

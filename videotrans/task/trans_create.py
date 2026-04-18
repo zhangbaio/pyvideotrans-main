@@ -15,7 +15,7 @@ from videotrans.configure.config import ROOT_DIR,tr,app_cfg,settings,params,TEMP
 from videotrans.recognition import run as run_recogn, Faster_Whisper_XXL, Whisper_CPP, \
     is_allow_lang as recogn_allow_lang, FASTER_WHISPER
 from videotrans.translator import run as run_trans, get_audio_code
-from videotrans.tts import run as run_tts, EDGE_TTS, AZURE_TTS, SUPPORT_CLONE, QWEN_TTS
+from videotrans.tts import run as run_tts, EDGE_TTS, AZURE_TTS, SUPPORT_CLONE, QWEN_TTS, QWEN3LOCAL_TTS
 from videotrans.task.simple_runnable_qt import run_in_threadpool
 from videotrans.util import tools, contants
 from ._base import BaseTask
@@ -81,6 +81,9 @@ class TransCreate(BaseTask):
     def __post_init__(self):
         # 首先，处理本类的默认配置
         super().__post_init__()
+        if getattr(self.cfg, 'replace_voice_only', False):
+            self.cfg.target_language = self.cfg.source_language
+            self.cfg.target_language_code = self.cfg.source_language_code
         if self.cfg.clear_cache and Path(self.cfg.target_dir).is_dir():
             shutil.rmtree(self.cfg.target_dir, ignore_errors=True)
         self._signal(text=tr('kaishichuli'))
@@ -140,6 +143,10 @@ class TransCreate(BaseTask):
             self.cfg.target_wav_output = f"{self.cfg.target_dir}/{self.cfg.target_language_code}-dubbing.m4a"
             self.cfg.target_wav = f"{self.cfg.cache_folder}/target-dubbing.wav"
             self.shoud_dubbing = True
+
+        if getattr(self.cfg, 'replace_voice_only', False):
+            self.shoud_trans = False
+            self.shoud_dubbing = bool(self.cfg.voice_role and self.cfg.voice_role != 'No')
 
         # 判断如果是音频，则到生成音频结束，无需合并，并且无需分离视频、无需背景音处理
         if self.cfg.ext in contants.AUDIO_EXITS:
@@ -779,9 +786,55 @@ class TransCreate(BaseTask):
         spk_json = Path(self.cfg.cache_folder + "/speaker.json")
         if not spk_json.exists():
             return None, None
+        try:
+            spk_list = json.loads(spk_json.read_text(encoding='utf-8'))
+        except Exception as e:
+            logger.warning(f'Step4: 璇诲彇 speaker.json 澶辫触: {e}')
+            return None, None
+        if not spk_list:
+            return None, None
 
         # 目前只对 Edge-TTS 分配音色池；其他 TTS 类型回退到全局 voice_role
         # (CosyVoice 等克隆型 TTS 在 Step 5 通过 ref_wav 映射实现角色区分)
+        if self.cfg.tts_type == QWEN3LOCAL_TTS and self.cfg.voice_role == 'auto-match':
+            refs_json = Path(self.cfg.cache_folder + "/speaker_refs.json")
+            if not refs_json.exists():
+                logger.warning('Step4: auto-match 缺少 speaker_refs.json')
+                return None, None
+            try:
+                from videotrans.util.qwen3local_fingerprint import ensure_qwen3local_fingerprint
+                ensure_qwen3local_fingerprint(is_cuda=self.cfg.is_cuda)
+            except Exception as e:
+                logger.warning(f'Step4: auto-match 准备 qwen3local 指纹库失败: {e}')
+            try:
+                ref_info = json.loads(refs_json.read_text(encoding='utf-8'))
+            except Exception as e:
+                logger.warning(f'Step4: 璇诲彇 speaker_refs.json 澶辫触: {e}')
+                return None, None
+            speaker_refs = {}
+            for spk_id, data in (ref_info or {}).items():
+                if isinstance(data, dict) and data.get('wav') and Path(data['wav']).exists():
+                    speaker_refs[spk_id] = data['wav']
+            if not speaker_refs:
+                logger.warning('Step4: auto-match 无可用 speaker 参考音频')
+                return None, None
+            try:
+                from videotrans.util.voice_matcher import match_voices_to_speakers
+                rolelist = tools.get_qwenttslocal_rolelist()
+                spk_voice_map = match_voices_to_speakers(
+                    speaker_refs=speaker_refs,
+                    all_voices=list(rolelist.keys()),
+                    tts_type=self.cfg.tts_type,
+                )
+            except Exception as e:
+                logger.warning(f'Step4: auto-match 匹配失败: {e}')
+                return None, None
+            if not spk_voice_map:
+                return None, None
+            logger.info(f'Step4 auto-match Qwen3Local Speaker→Voice {spk_voice_map}')
+            self._signal(text=f'Speaker 鈫?Voice: {spk_voice_map}')
+            return spk_list, spk_voice_map
+
         if self.cfg.tts_type != EDGE_TTS:
             return None, None
 
@@ -814,6 +867,53 @@ class TransCreate(BaseTask):
         logger.info(f'Step4 说话人音色映射: {spk_voice_map}')
         # 同时输出到 CLI，方便调试
         self._signal(text=f'Speaker → Voice: {spk_voice_map}')
+        return spk_list, spk_voice_map
+
+    def _build_qwen3local_auto_match_map(self):
+        spk_json = Path(self.cfg.cache_folder + "/speaker.json")
+        refs_json = Path(self.cfg.cache_folder + "/speaker_refs.json")
+        if not spk_json.exists() or not refs_json.exists():
+            return None, None
+        try:
+            from videotrans.util.qwen3local_fingerprint import ensure_qwen3local_fingerprint
+            ensure_qwen3local_fingerprint(is_cuda=self.cfg.is_cuda)
+        except Exception as e:
+            logger.warning(f'Step4 auto-match 准备 qwen3local 指纹库失败: {e}')
+        try:
+            spk_list = json.loads(spk_json.read_text(encoding='utf-8'))
+            ref_info = json.loads(refs_json.read_text(encoding='utf-8'))
+        except Exception as e:
+            logger.warning(f'Step4 auto-match 璇绘枃浠跺け璐?: {e}')
+            return None, None
+        if not spk_list or not ref_info:
+            return None, None
+        speaker_refs = {}
+        for spk_id, data in (ref_info or {}).items():
+            if isinstance(data, dict) and data.get('wav') and Path(data['wav']).exists():
+                speaker_refs[spk_id] = data['wav']
+        if not speaker_refs:
+            return None, None
+        try:
+            from videotrans.util.voice_matcher import match_voices_to_speakers_verbose
+            rolelist = tools.get_qwenttslocal_rolelist()
+            matched = match_voices_to_speakers_verbose(
+                speaker_refs=speaker_refs,
+                all_voices=list(rolelist.keys()),
+                tts_type=self.cfg.tts_type,
+            )
+            spk_voice_map = matched.get('mapping', {})
+            detail_path = Path(self.cfg.cache_folder + "/auto_match_detail.json")
+            detail_path.write_text(
+                json.dumps(matched.get('details', {}), ensure_ascii=False, indent=2),
+                encoding='utf-8'
+            )
+        except Exception as e:
+            logger.warning(f'Step4 auto-match 鍖归厤澶辫触: {e}')
+            return None, None
+        if not spk_voice_map:
+            return None, None
+        logger.info(f'Step4 auto-match Qwen3Local Speaker→Voice {spk_voice_map}')
+        self._signal(text=f'Speaker 鈫?Voice: {spk_voice_map}')
         return spk_list, spk_voice_map
 
     def _build_speaker_ref_map(self):
@@ -1342,9 +1442,13 @@ class TransCreate(BaseTask):
         # 取出设置的每行角色
         line_roles = app_cfg.line_roles
         voice_role = self.cfg.voice_role
+        if voice_role == 'auto-match' and self.cfg.tts_type == QWEN3LOCAL_TTS:
+            voice_role = 'Vivian'
 
         # Step 4: 非克隆 TTS，按说话人分配不同音色
         spk_list_v, spk_voice_map = self._build_speaker_voice_map()
+        if self.cfg.tts_type == QWEN3LOCAL_TTS and self.cfg.voice_role == 'auto-match':
+            spk_list_v, spk_voice_map = self._build_qwen3local_auto_match_map()
         # Step 5: 克隆型 TTS，按说话人绑定克隆参考音频
         spk_list_c, spk_ref_map = self._build_speaker_ref_map()
         # 两者 tts_type 互斥，最多一个生效

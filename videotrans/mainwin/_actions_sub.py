@@ -45,6 +45,16 @@ class WinActionSub:
     # 保存原始的 uuid:mp4 信息，用于出错重试
     uuid_queue_mp4: Dict = field(default_factory=dict, init=False)
 
+    def _replace_mode_text(self, zh_text: str, en_text: str) -> str:
+        return zh_text if defaulelang == 'zh' else en_text
+
+    def _sync_replace_voice_target_language(self, source_text: str = ""):
+        if self.main.app_mode != 'replace_voice':
+            return
+        source_text = source_text or self.main.source_language.currentText()
+        if source_text and self.main.target_language.currentText() != source_text:
+            self.main.target_language.setCurrentText(source_text)
+
 
 
 
@@ -135,6 +145,7 @@ class WinActionSub:
             tr("Customize each configuration to batch video translation. When selecting a single video, you can pause to edit subtitles during processing."))
         self.main.startbtn.setText(tr('kaishichuli'))
         self.main.action_tiquzimu.setChecked(False)
+        self.main.action_replace_voice.setChecked(False)
 
         # 仅保存视频行
         self.main.copysrt_rawvideo.hide()
@@ -143,10 +154,12 @@ class WinActionSub:
         self.main.label_9.show()
         self.main.recogn2pass.show()
         self.main.translate_type.show()
+        self.main.translate_type.setDisabled(False)
         self.main.label_2.show()
         self.main.source_language.show()
         self.main.label_3.show()
         self.main.target_language.show()
+        self.main.target_language.setDisabled(False)
         self.main.label.show()
         if defaulelang=='zh':
             self.main.proxy.show()
@@ -202,6 +215,89 @@ class WinActionSub:
         self.show_adv_status=True
         self.toggle_adv()
 
+    def set_replace_voice(self):
+        self.main.action_replace_voice.setChecked(True)
+        self.main.splitter.setSizes([self.main.width - 300, 300])
+        self.main.app_mode = 'replace_voice'
+        self.main.show_tips.setText(
+            self._replace_mode_text(
+                "识别原始台词并直接重配音，只替换角色音色，不做翻译。",
+                "Recognize the original dialogue and re-dub it directly without translation."
+            )
+        )
+        self.main.startbtn.setText(
+            self._replace_mode_text(
+                "开始替换音色",
+                "Start Voice Replacement"
+            )
+        )
+        self.main.action_biaozhun.setChecked(False)
+        self.main.action_tiquzimu.setChecked(False)
+
+        self.main.copysrt_rawvideo.hide()
+
+        self.main.label_9.show()
+        self.main.translate_type.show()
+        self.main.translate_type.setDisabled(True)
+        self.main.recogn2pass.show()
+        self.main.label_2.show()
+        self.main.source_language.show()
+        self.main.label_3.show()
+        self.main.target_language.show()
+        self.main.target_language.setDisabled(True)
+        self.main.label.show()
+        if defaulelang=='zh':
+            self.main.proxy.show()
+
+        self.main.tts_text.show()
+        self.main.tts_type.show()
+        self.main.tts_type.setDisabled(False)
+        self.main.label_4.show()
+        self.main.voice_role.show()
+        self.main.listen_btn.show()
+        self.main.volume_label.show()
+        self.main.volume_rate.show()
+        self.main.volume_rate.setDisabled(False)
+        self.main.pitch_label.show()
+        self.main.pitch_rate.show()
+        self.main.pitch_rate.setDisabled(False)
+
+        self.main.reglabel.show()
+        self.main.only_out_mp4.show()
+        self.main.recogn_type.show()
+        self.main.model_name_help.show()
+        self.main.model_name.show()
+        self.main.subtitle_type.setCurrentIndex(1)
+        self.main.subtitle_type.show()
+        self.main.rephrase.show()
+        self.main.remove_noise.show()
+
+        self.main.align_btn.show()
+        self.main.voice_rate.show()
+        self.main.label_6.show()
+        self.main.voice_autorate.show()
+        self.main.video_autorate.show()
+        self.main.label_cjklinenums.show()
+        self.main.cjklinenums.show()
+        self.main.set_ass.show()
+        self.main.label_othlinenums.show()
+        self.main.othlinenums.show()
+        self.main.output_srt.hide()
+        self.main.output_srt_label.hide()
+        if platform.system() != 'Darwin':
+            self.main.enable_cuda.show()
+
+        if not self.main.voice_autorate.isChecked() and not self.main.video_autorate.isChecked():
+            self.main.remove_silent_mid.setVisible(True)
+            self.main.align_sub_audio.setVisible(True)
+        else:
+            self.main.remove_silent_mid.setVisible(False)
+            self.main.align_sub_audio.setVisible(False)
+
+        self._sync_replace_voice_target_language()
+        self.show_adv_status=True
+        self.toggle_adv()
+
     # 视频提取字幕并翻译，无需配音
     def set_tiquzimu(self):
         self.main.action_tiquzimu.setChecked(True)
@@ -210,6 +306,7 @@ class WinActionSub:
         self.main.show_tips.setText(tr('tiquzimu'))
         self.main.startbtn.setText(tr('kaishitiquhefanyi'))
         self.main.action_biaozhun.setChecked(False)
+        self.main.action_replace_voice.setChecked(False)
 
         # 仅保存视频行
         self.main.copysrt_rawvideo.show()
@@ -217,10 +314,12 @@ class WinActionSub:
         # 翻译
         self.main.label_9.show()
         self.main.translate_type.show()
+        self.main.translate_type.setDisabled(False)
         self.main.label_2.show()
         self.main.source_language.show()
         self.main.label_3.show()
         self.main.target_language.show()
+        self.main.target_language.setDisabled(False)
         self.main.label.show()
         if defaulelang=='zh':
             self.main.proxy.show()
@@ -441,6 +540,12 @@ class WinActionSub:
             f"subtitle_text={self.main.subtitle_type.currentText()} "
             f"voice_role={voice_role}"
         )
+        if self.main.app_mode == 'replace_voice':
+            self.cfg['replace_voice_only'] = True
+            self.cfg['target_language'] = self.cfg['source_language']
+            self.cfg['target_language_code'] = self.cfg['source_language_code']
+            self.cfg['translate_type'] = 0
+            return
         if self.main.app_mode == 'tiqu' or (subtitle_type < 1 and voice_role in ('No', '', " ")):
             self.main.app_mode = 'tiqu'
             # 提取字幕模式，必须有视频、有原始语言，语音模型
@@ -455,6 +560,9 @@ class WinActionSub:
                 f"cfg_subtitle_type={self.cfg['subtitle_type']} "
                 f"cfg_voice_role={self.cfg['voice_role']}"
             )
+            self.cfg['replace_voice_only'] = False
+            return
+        self.cfg['replace_voice_only'] = False
 
     # 导入背景声音
     def get_background(self):
@@ -587,14 +695,14 @@ class WinActionSub:
         if role == 'No' or voice_role in ('clone', 'auto-match'):
             self.main.listen_btn.hide()
             return
-        if self.main.app_mode in ['biaozhun']:
+        if self.main.app_mode in ['biaozhun', 'replace_voice']:
             self.main.listen_btn.show()
             self.main.listen_btn.setDisabled(False)
 
 
     # 如果存在音频则设为提取
     def check_name(self):
-        if self.main.app_mode != 'tiqu':
+        if self.main.app_mode not in ['tiqu', 'replace_voice']:
             for it in self.queue_mp4:
                 if Path(it).suffix.lower() in contants.AUDIO_EXITS:
                     self.main.app_mode = 'tiqu'

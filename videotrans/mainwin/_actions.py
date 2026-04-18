@@ -286,11 +286,12 @@ class WinAction(WinActionSub):
             else:
                 self.main.show_tips.setText('')
             # 判断翻译渠道是否支持翻译到该目标语言
-            if translator.is_allow_translate(translate_type=self.main.translate_type.currentIndex(), show_target=t) is not True:
+            if self.main.app_mode != 'replace_voice' and translator.is_allow_translate(
+                    translate_type=self.main.translate_type.currentIndex(), show_target=t) is not True:
                 return
 
         if not self.change_by_lang(self.main.tts_type.currentIndex()):
-            if role != 'No' and self.main.app_mode in ['biaozhun']:
+            if role != 'No' and self.main.app_mode in ['biaozhun', 'replace_voice']:
                 self.main.listen_btn.show()
                 self.main.listen_btn.setDisabled(False)
             else:
@@ -497,6 +498,9 @@ class WinAction(WinActionSub):
         # 存储语言代码
         self.cfg['source_language_code'] = translator.get_code(show_text=self.cfg['source_language'])
         self.cfg['target_language_code'] = translator.get_code(show_text=self.cfg['target_language'])
+        if self.main.app_mode == 'replace_voice':
+            self.cfg['target_language'] = self.cfg['source_language']
+            self.cfg['target_language_code'] = self.cfg['source_language_code']
 
         # 清理缓存
         self.cfg['clear_cache'] = self.main.clear_cache.isChecked()
@@ -506,6 +510,11 @@ class WinAction(WinActionSub):
         # 配音设置
         self.cfg['tts_type'] = self.main.tts_type.currentIndex()
         self.cfg['voice_role'] = self.main.voice_role.currentText()
+        self.cfg['replace_voice_only'] = self.main.app_mode == 'replace_voice'
+        if self.cfg['replace_voice_only'] and self.cfg['voice_role'] in ('No', '', ' '):
+            tools.show_error('Please select a dubbing voice role first')
+            self.main.startbtn.setDisabled(False)
+            return
         try:
             volume = int(self.main.volume_rate.value())
             pitch = int(self.main.pitch_rate.value())
@@ -551,6 +560,8 @@ class WinAction(WinActionSub):
         self.cfg['enable_diariz'] = self.main.enable_diariz.isChecked()
         self.cfg['recogn2pass'] = self.main.recogn2pass.isChecked()
         self.cfg['nums_diariz'] = self.main.nums_diariz.currentIndex()
+        if self.main.app_mode == 'replace_voice' and self.cfg['tts_type'] == tts.QWEN3LOCAL_TTS and self.cfg['voice_role'] == 'auto-match':
+            self.cfg['enable_diariz'] = True
         
 
 
@@ -653,7 +664,7 @@ class WinAction(WinActionSub):
         self.update_status('ing')
 
 
-        if self.main.recogn_type.currentIndex() == recognition.FASTER_WHISPER or self.main.app_mode == 'biaozhun':
+        if self.main.recogn_type.currentIndex() == recognition.FASTER_WHISPER or self.main.app_mode in ['biaozhun', 'replace_voice']:
             # 背景音量
             settings['loop_backaudio'] = self.main.is_loop_bgm.currentIndex()
             try:
@@ -905,6 +916,8 @@ class WinAction(WinActionSub):
 
         if self.main.app_mode == 'tiqu':
             self.set_tiquzimu()
+        elif self.main.app_mode == 'replace_voice':
+            self.set_replace_voice()
         self._reset()
         self.had_click_btn=False
 
@@ -985,6 +998,7 @@ class WinAction(WinActionSub):
                 target_language=target_language,
                 tts_type=int(tts_type),
                 video_path=video_path,
+                default_role=self.main.voice_role.currentText(),
                 parent=self.main
 
             )

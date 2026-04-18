@@ -64,6 +64,7 @@ class TaskCfgSTS(TaskCfgBase):
 # 视频翻译所有
 @dataclass
 class TaskCfgVTT(TaskCfgSTT,TaskCfgTTS,TaskCfgSTS):
+    replace_voice_only: bool=False
     ############## 视频翻译特有
     subtitle_language: str=None  # 软字幕嵌入语言代码，3位
     app_mode: str="biaozhun"  # 工作模式 biaohzun tiqu

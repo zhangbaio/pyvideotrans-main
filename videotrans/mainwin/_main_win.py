@@ -1,5 +1,5 @@
 from PySide6.QtCore import Qt, QTimer, QSettings, QEvent, QThreadPool, QCoreApplication, Signal
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import QMessageBox, QMainWindow, QPushButton, QToolBar, QSizePolicy, QApplication
 import asyncio, sys
 import os
@@ -80,6 +80,11 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             "biaozhun": self.action_biaozhun,
             "tiqu": self.action_tiquzimu
         }
+        self.action_replace_voice = QAction(self)
+        self.action_replace_voice.setCheckable(True)
+        self.action_replace_voice.setObjectName("action_replace_voice")
+        self.toolBar.insertAction(self.action_tiquzimu, self.action_replace_voice)
+        self.moshi["replace_voice"] = self.action_replace_voice
         self.subtitle_type.addItems(
             [
                 tr('nosubtitle'),
@@ -275,6 +280,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.action_tiquzimu.setText(tr("Extract Srt And Translate"))
         self.action_tiquzimu.setToolTip(
             tr("Batch recognize speech in video as srt subtitles"))
+        self.action_replace_voice.setText("Voice Replacement")
+        self.action_replace_voice.setToolTip(
+            "Replace speaker voices without translating the original dialogue")
 
         self.action_yinshipinfenli.setText(tr("Separate Video to audio"))
         self.action_yinshipinfenli.setToolTip(tr("Separate audio and silent videos from videos"))
@@ -477,6 +485,14 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 self.voice_role.setCurrentText(default_role)
                 self.win_action.show_listen_btn(default_role)
 
+        saved_mode = params.get('app_mode', 'biaozhun')
+        if saved_mode == 'tiqu':
+            self.win_action.set_tiquzimu()
+        elif saved_mode == 'replace_voice':
+            self.win_action.set_replace_voice()
+        else:
+            self.win_action.set_biaozhun()
+
         
         
         QApplication.processEvents()
@@ -543,6 +559,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.translate_type.currentIndexChanged.connect(self.win_action.set_translate_type)
         self.subtitle_type.currentIndexChanged.connect(self.win_action.set_subtitle_type)
         self.voice_role.currentTextChanged.connect(self.win_action.show_listen_btn)
+        self.source_language.currentTextChanged.connect(self.win_action._sync_replace_voice_target_language)
         self.target_language.currentTextChanged.connect(self.win_action.set_voice_role)
 
         self.proxy.textChanged.connect(self.win_action.change_proxy)
@@ -562,6 +579,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.glossary.clicked.connect(lambda: tools.show_glossary_editor(self))
         self.action_biaozhun.triggered.connect(self.win_action.set_biaozhun)
         self.action_tiquzimu.triggered.connect(self.win_action.set_tiquzimu)
+        self.action_replace_voice.triggered.connect(self.win_action.set_replace_voice)
 
         self.actionbaidu_key.triggered.connect(lambda: self._open_winform('baidu'))
         self.actionali_key.triggered.connect(lambda: self._open_winform('ali'))
