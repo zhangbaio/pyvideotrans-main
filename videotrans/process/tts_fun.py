@@ -96,6 +96,24 @@ def qwen3tts_fun(
         _prompt_cache[cache_key] = items[0]
         return items[0]
 
+    def _cascade_atempo(factor):
+        """ffmpeg atempo 单次限制 [0.5, 2.0]; 超出需级联相乘。
+        返回: "atempo=2.000,atempo=1.500" 这种 filter 字符串。
+        """
+        if factor <= 0:
+            return ''
+        parts = []
+        f = float(factor)
+        # 大于 2.0 时依次拆成 2.0 × 2.0 × ... × rest
+        while f > 2.0:
+            parts.append(2.0)
+            f /= 2.0
+        while f < 0.5:
+            parts.append(0.5)
+            f /= 0.5
+        parts.append(f)
+        return ','.join(f'atempo={x:.3f}' for x in parts)
+
     def _apply_rate_to_file(file_path, rate_text):
         if not rate_text or rate_text in ('+0%', '0%', '0'):
             return
@@ -105,10 +123,13 @@ def qwen3tts_fun(
             return
         if factor <= 0 or abs(factor - 1.0) < 0.01:
             return
+        filt = _cascade_atempo(factor)
+        if not filt:
+            return
         tmp_out = file_path + '.tempo.wav'
         try:
             tools.runffmpeg([
-                '-y', '-i', file_path, '-filter:a', f'atempo={factor:.3f}', tmp_out
+                '-y', '-i', file_path, '-filter:a', filt, tmp_out
             ], force_cpu=True)
             if Path(tmp_out).exists():
                 shutil.move(tmp_out, file_path)
@@ -118,6 +139,25 @@ def qwen3tts_fun(
                 Path(tmp_out).unlink(missing_ok=True)
             except Exception:
                 pass
+
+    # --- 极短参考音频兜底 ---
+    # Qwen3-TTS 的 speaker embedding 在 < 1s 参考上非常不稳; < 0.3s 几乎必出噪声
+    MIN_REF_SEC_FOR_SYNTH = 0.3      # 低于此不合成, 直接填静音
+    MIN_REF_SEC_FOR_REF_TEXT = 1.0   # 低于此忽略 ref_text, 强制 x_vector_only_mode
+
+    def _wav_seconds(p):
+        try:
+            info = sf.info(str(p))
+            return float(info.frames) / float(info.samplerate or 1)
+        except Exception:
+            return 0.0
+
+    def _write_silence(out_path, seconds):
+        """写一段指定时长的静音 wav, 16k/mono; seconds 下限 0.2s 防 0 长度"""
+        import numpy as np
+        seconds = max(0.2, float(seconds or 0.5))
+        sr = 24000
+        sf.write(str(out_path), np.zeros(int(sr * seconds), dtype='float32'), sr)
 
     # 同 speaker 批量合成: MPS 上 batch=4 实测 1.88x 加速 (RTF 8.24→4.15)
     # CUDA 收益更大, CPU 基本等效; 保守上限 4 防 MPS OOM
@@ -148,6 +188,26 @@ def qwen3tts_fun(
             msg = f"不存在参考音频,无法克隆:{role=},{wavfile=}"
             _write_log(logs_file, json.dumps({"type": "logs", "text": msg}))
             return ('skip', None, None, None, None)
+        # --- 极短参考保护 (仅对 clone 路径, custom 用不到 ref_wav) ---
+        if role == 'clone':
+            ref_dur = _wav_seconds(wavfile)
+            if 0 < ref_dur < MIN_REF_SEC_FOR_SYNTH:
+                # 源字幕时长作为静音长度; 拿不到就用 0.5s
+                try:
+                    src_dur = (float(it.get('end_time_source', 0) or 0) -
+                               float(it.get('start_time_source', 0) or 0)) / 1000.0
+                except Exception:
+                    src_dur = 0.5
+                _write_silence(filename, src_dur if src_dur > 0 else 0.5)
+                msg = (f"参考音频过短 {ref_dur:.2f}s < {MIN_REF_SEC_FOR_SYNTH}s, "
+                       f"已填静音跳过: {Path(wavfile).name}")
+                _write_log(logs_file, json.dumps({"type": "logs", "text": msg}))
+                logger.warning(f'[qwen3tts] {msg}')
+                return ('skip', None, None, None, None)
+            if 0 < ref_dur < MIN_REF_SEC_FOR_REF_TEXT and ref_text:
+                # 短 ref 用 ref_text 会被 speaker prompt 带偏语言, 强制 x_vector 模式
+                logger.debug(f'[qwen3tts] ref 过短 {ref_dur:.2f}s, 忽略 ref_text 走 x_vector_only_mode')
+                ref_text = ''
         return ('clone', wavfile, ref_text or '', filename, text)
 
     try:
