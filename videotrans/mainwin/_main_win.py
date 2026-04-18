@@ -173,6 +173,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.voice_autorate.setToolTip(tr("shuoming03"))
         self.video_autorate.setText(tr("Slow video"))
         self.video_autorate.setToolTip(tr("Video Auto Slow"))
+        self.enable_lipsync.setText(tr("Enable lip sync"))
+        self.enable_lipsync.setToolTip(tr("Generate a lip-synced video from the dubbed audio using MuseTalk when available."))
 
         self.remove_silent_mid.setText(tr("Del inline mute?"))
         self.remove_silent_mid.setToolTip(
@@ -373,6 +375,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.pitch_rate.setValue(int(params.get('pitch', '0').replace('Hz', '')))
         self.voice_autorate.setChecked(bool(params.get('voice_autorate', False)))
         self.video_autorate.setChecked(bool(params.get('video_autorate', False)))
+        self.enable_lipsync.setChecked(bool(params.get('enable_lipsync', False)))
         self.fix_punc.setChecked(bool(params.get('fix_punc', False)))
         self.recogn2pass.setChecked(bool(params.get('recogn2pass', False)))
         self.only_out_mp4.setChecked(bool(params.get('only_out_mp4', False)))

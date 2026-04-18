@@ -550,6 +550,7 @@ class WinAction(WinActionSub):
         self.cfg['voice_rate'] = f"+{voice_rate}%" if voice_rate >= 0 else f"{voice_rate}%"
         self.cfg['voice_autorate'] = self.main.voice_autorate.isChecked()
         self.cfg['video_autorate'] = self.main.video_autorate.isChecked()
+        self.cfg['enable_lipsync'] = self.main.enable_lipsync.isChecked()
 
         # 人声背景音分离 添加背景音频
         self.cfg['is_separate'] = self.main.is_separate.isChecked()

@@ -140,6 +140,8 @@
   "Dubbing from subtitles": "字幕配音处理中",
   "Dubbing role": "配音角色",
   "Dubbing speed": "配音语速+",
+  "Enable lip sync": "启用对口型",
+  "Generate a lip-synced video from the dubbed audio using MuseTalk when available.": "如果本机已配置 MuseTalk，则根据配音音频生成对口型视频",
   "Dubbing succeeded {}，failed {}": "配音成功{}个，失败 {}个",
   "Duration of each segment/second": "批量推理模式时,每段秒数",
   "Dutch": "荷兰语",

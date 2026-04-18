@@ -140,6 +140,8 @@
     "Dubbing from subtitles": "Dubbing from Subs...",
     "Dubbing role": "Voice Role",
     "Dubbing speed": "Dubbing Rate",
+    "Enable lip sync": "Enable lip sync",
+    "Generate a lip-synced video from the dubbed audio using MuseTalk when available.": "Generate a lip-synced video from the dubbed audio using MuseTalk when available.",
     "Dubbing succeeded {}，failed {}": "Success: {}, Failed: {}",
     "Duration of each segment/second": "Seg Duration (Batch Mode)",
     "Dutch": "Dutch",

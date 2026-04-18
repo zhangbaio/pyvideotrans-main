@@ -271,6 +271,8 @@ class Ui_MainWindow(object):
 
         self.video_autorate = QtWidgets.QCheckBox(self.layoutWidget)
         self.video_autorate.setObjectName("videoe_autorate")
+        self.enable_lipsync = QtWidgets.QCheckBox(self.layoutWidget)
+        self.enable_lipsync.setObjectName("enable_lipsync")
         
         self.remove_silent_mid = QtWidgets.QCheckBox()
         self.remove_silent_mid.setObjectName("remove_silent_mid")
@@ -288,6 +290,7 @@ class Ui_MainWindow(object):
         self.align_layout.addWidget(self.align_btn)
         self.align_layout.addWidget(self.voice_autorate)
         self.align_layout.addWidget(self.video_autorate)
+        self.align_layout.addWidget(self.enable_lipsync)
         self.align_layout.addWidget(self.remove_silent_mid)
         self.align_layout.addWidget(self.align_sub_audio)
         self.align_layout.addWidget(self.subtitle_type)
