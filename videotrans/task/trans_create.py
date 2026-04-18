@@ -185,6 +185,7 @@ class TransCreate(BaseTask):
     # 1. 预处理，分离音视频、分离人声等
     def prepare(self) -> None:
         if self._exit(): return
+        self._stage_start("prepare")
         self._signal(text=tr("Hold on a monment..."))
         Path(self.cfg.cache_folder).mkdir(parents=True, exist_ok=True)
         Path(self.cfg.target_dir).mkdir(parents=True, exist_ok=True)
@@ -280,11 +281,13 @@ class TransCreate(BaseTask):
             self._split_audio_byraw()
 
         self._signal(text=tr('endfenliyinpin'))
+        self._stage_end("prepare")
 
     # 开始识别
     def recogn(self) -> None:
         if self._exit(): return
         if not self.shoud_recogn: return
+        self._stage_start("recogn")
         self.precent += 3
         self._signal(text=tr("kaishishibie"))
         if tools.vail_file(self.cfg.source_sub):
@@ -292,6 +295,7 @@ class TransCreate(BaseTask):
             if Path(self.cfg.target_dir + "/speaker.json").exists():
                 shutil.copy2(self.cfg.target_dir + "/speaker.json", self.cfg.cache_folder + "/speaker.json")
             self._recogn_succeed()
+            self._stage_end("recogn")
             return
 
         if not tools.vail_file(self.cfg.source_wav):
@@ -438,6 +442,7 @@ class TransCreate(BaseTask):
         if Path(self.cfg.cache_folder + "/speaker.json").exists():
             self._recogn_succeed()
             self._signal(text=tr('endtiquzimu'))
+            self._stage_end("recogn")
             return
 
         if self.cfg.rephrase == 1:
@@ -460,6 +465,7 @@ class TransCreate(BaseTask):
 
         self._recogn_succeed()
         self._signal(text=tr('endtiquzimu'))
+        self._stage_end("recogn")
 
     def _recogn_succeed(self) -> None:
         self.precent += 5
@@ -489,7 +495,8 @@ class TransCreate(BaseTask):
         if not tools.vail_file(self.cfg.target_wav):
             logger.debug(f'跳过二次识别，因无配音音频文件')
             return
-            
+             
+        self._stage_start("recogn2pass")
         self.precent += 3
         self._signal(text=tr("Secondary speech recognition of dubbing files"))
         logger.debug(f'进入二次识别')
@@ -588,6 +595,7 @@ class TransCreate(BaseTask):
             # 覆盖
             shutil.copy2(outsrt_file, self.cfg.target_sub)
             self._signal(text='STT 2 pass end')
+            self._stage_end("recogn2pass")
             logger.debug('二次识别成功完成')
         
         except Exception as e:
@@ -600,9 +608,11 @@ class TransCreate(BaseTask):
         # 说话人设为1，不进行分离
         if self._exit() or not self.cfg.enable_diariz or self.max_speakers == 1:
             return
+        self._stage_start("diariz")
         # speaker.json 已存在时直接提取参考音频（跳过重新分离）
         if Path(self.cfg.cache_folder + "/speaker.json").exists():
             self.extract_speaker_refs()
+            self._stage_end("diariz")
             return
         # built pyannote reverb ali_CAM
         speaker_type = settings.get('speaker_type', 'built')
@@ -674,6 +684,7 @@ class TransCreate(BaseTask):
                 # drama.json 里已有角色, 自动写 spk_to_character.json 供下游 Step5 复用
                 self._auto_match_speakers_by_embedding()
             self._signal(text=tr('separating speakers end'))
+            self._stage_end("diariz")
         except:
             pass
 
@@ -1115,6 +1126,7 @@ class TransCreate(BaseTask):
     def trans(self) -> None:
         if self._exit(): return
         if not self.shoud_trans: return
+        self._stage_start("trans")
         self.precent += 3
         self._signal(text=tr('starttrans'))
 
@@ -1124,6 +1136,7 @@ class TransCreate(BaseTask):
                 text=Path(self.cfg.target_sub).read_text(encoding="utf-8", errors="ignore"),
                 type='replace_subtitle'
             )
+            self._stage_end("trans")
             return
         try:
             rawsrt = tools.get_subtitle_from_srt(self.cfg.source_sub, is_file=True)
@@ -1168,6 +1181,7 @@ class TransCreate(BaseTask):
             self.hasend = True
             raise
         self._signal(text=tr('endtrans'))
+        self._stage_end("trans")
 
     def _del_sub(self):
         try:
@@ -1183,6 +1197,7 @@ class TransCreate(BaseTask):
         if self.cfg.app_mode == 'tiqu' or not self.shoud_dubbing:
             return
 
+        self._stage_start("dubbing")
         self._signal(text=tr('kaishipeiyin'))
         self.precent += 3
         try:
@@ -1192,6 +1207,7 @@ class TransCreate(BaseTask):
             self.hasend = True
             raise
         self._signal(text=tr('The dubbing is finished'))
+        self._stage_end("dubbing")
 
     # 音画字幕对齐
     def align(self) -> None:
@@ -1200,6 +1216,7 @@ class TransCreate(BaseTask):
         if self.cfg.app_mode == 'tiqu' or not self.shoud_dubbing or self.ignore_align:
             return
 
+        self._stage_start("align")
         self._signal(text=tr('duiqicaozuo'))
         self.precent += 3
         if self.cfg.voice_autorate or self.cfg.video_autorate:
@@ -1262,6 +1279,7 @@ class TransCreate(BaseTask):
                 pass
 
         self._signal(text=tr('Alignment phase complete, awaiting the next step'))
+        self._stage_end("align")
 
     # 将 视频、音频、字幕合成
     def assembling(self) -> None:
@@ -1269,6 +1287,7 @@ class TransCreate(BaseTask):
         # 音频翻译， 提取模式 无需合并
         if self.is_audio_trans or self.cfg.app_mode == 'tiqu' or not self.shoud_hebing:
             return
+        self._stage_start("assembling")
         if self.precent < 95:
             self.precent += 3
         self._signal(text=tr('kaishihebing'))
@@ -1277,11 +1296,13 @@ class TransCreate(BaseTask):
         except Exception as e:
             self.hasend = True
             raise
+        self._stage_end("assembling")
 
     # 收尾，根据 output和 linshi_output是否相同，不相同，则移动
     def task_done(self) -> None:
         # 正常完成仍是 ing，手动停止变为 stop
         if self._exit(): return
+        self._stage_start("task_done")
         self.precent = 99
 
         # 提取时，删除
@@ -1310,11 +1331,16 @@ class TransCreate(BaseTask):
                 logger.exception(e, exc_info=True)
         self.hasend = True
         self.precent = 100
+        self.task_finished_at = time.time()
+        self._stage_end("task_done")
         try:
             shutil.rmtree(self.cfg.cache_folder, ignore_errors=True)
         except:
             pass
-        self._signal(text=f"{self.cfg.name}", type='succeed')
+        self._signal(text=json.dumps({
+            "name": self.cfg.name,
+            "timing": self._timing_summary(),
+        }, ensure_ascii=False), type='succeed')
         tools.send_notification(tr('Succeed'), f"{self.cfg.basename}")
 
     # 从原始视频分离出 无声视频

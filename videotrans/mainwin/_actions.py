@@ -856,7 +856,17 @@ class WinAction(WinActionSub):
         elif _type == 'logs' and self.processbtns[uuid].precent < 100:
             self.processbtns[uuid].setText(text)
         elif _type == 'succeed':
-            self.processbtns[uuid].setEnd()
+            total_sec = None
+            timing = None
+            try:
+                payload = json.loads(text) if isinstance(text, str) else text
+            except Exception:
+                payload = None
+            if isinstance(payload, dict):
+                timing = payload.get('timing')
+                if isinstance(timing, dict):
+                    total_sec = timing.get('total_sec')
+            self.processbtns[uuid].setEnd(total_sec=total_sec, timing=timing)
             if self.processbtns[uuid].name in self.queue_mp4:
                 self.queue_mp4.remove(self.processbtns[uuid].name)
         elif _type == 'error':

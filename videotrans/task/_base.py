@@ -1,7 +1,8 @@
 
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 from videotrans.configure.config import tr, params, settings, app_cfg, logger, ROOT_DIR
 from videotrans.configure._base import BaseCon
@@ -37,11 +38,34 @@ class BaseTask(BaseCon):
 
     # 是否需要嵌入配音或字幕
     shoud_hebing: bool = False
+    stage_timings: Dict = field(default_factory=dict, repr=False)
+    task_started_at: float = 0.0
+    task_finished_at: float = 0.0
 
     def __post_init__(self):
         super().__post_init__()
         if self.cfg.uuid:
             self.uuid = self.cfg.uuid
+        self.task_started_at = time.time()
+
+    def _stage_start(self, name: str):
+        stage = self.stage_timings.setdefault(name, {})
+        stage["started_at"] = time.time()
+
+    def _stage_end(self, name: str):
+        stage = self.stage_timings.setdefault(name, {})
+        started_at = stage.get("started_at")
+        if started_at:
+            stage["seconds"] = round(time.time() - started_at, 2)
+
+    def _timing_summary(self) -> dict:
+        total_sec = self.task_finished_at - self.task_started_at if self.task_finished_at and self.task_started_at else 0.0
+        stages = {}
+        for name, data in self.stage_timings.items():
+            seconds = data.get("seconds")
+            if seconds is not None:
+                stages[name] = seconds
+        return {"total_sec": round(max(total_sec, 0.0), 2), "stages": stages}
 
     # 预先处理，例如从视频中拆分音频、人声背景分离、转码等
     def prepare(self):
