@@ -85,6 +85,10 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.action_replace_voice.setObjectName("action_replace_voice")
         self.toolBar.insertAction(self.action_tiquzimu, self.action_replace_voice)
         self.moshi["replace_voice"] = self.action_replace_voice
+        self.action_remove_subtitle = QAction(self)
+        self.action_remove_subtitle.setObjectName("action_remove_subtitle")
+        self.menu.addAction(self.action_remove_subtitle)
+        self.menu.addSeparator()
         self.subtitle_type.addItems(
             [
                 tr('nosubtitle'),
@@ -319,6 +323,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.actionElevenlabs_key.setText("ElevenLabs.io")
 
         self.actionwatermark.setText(tr("Add watermark to video"))
+        self.action_remove_subtitle.setText(tr("Remove hard subtitles from video"))
         self.actionsepar.setText(tr("Vocal & instrument Separate"))
         self.actionsetini.setText(tr("Options"))
 
@@ -638,6 +643,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.actionopenrouter_key.triggered.connect(lambda: self._open_winform('openrouter'))
         self.actionsiliconflow_key.triggered.connect(lambda: self._open_winform('siliconflow'))
         self.actionwatermark.triggered.connect(lambda: self._open_winform('fn_watermark'))
+        self.action_remove_subtitle.triggered.connect(lambda: self._open_winform('fn_remove_subtitle'))
         self.actionsepar.triggered.connect(lambda: self._open_winform('fn_separate'))
         self.actionsetini.triggered.connect(lambda: self._open_winform('setini'))
         self.actionvideoandaudio.triggered.connect(lambda: self._open_winform('fn_videoandaudio'))

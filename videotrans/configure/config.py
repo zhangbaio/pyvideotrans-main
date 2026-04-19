@@ -779,7 +779,7 @@ def push_queue(uuid, jsondata):
 
 def register_task_log(uuid, *, log_path, summary_path=None, meta=None):
     if not uuid or not log_path:
-        return
+        return {}
     try:
         log_file = Path(log_path)
         log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -806,7 +806,7 @@ def register_task_log(uuid, *, log_path, summary_path=None, meta=None):
 
 def write_task_log(uuid, *, text="", level="INFO", event_type="logs", extra=None):
     if not uuid:
-        return
+        return {}
     task_info = app_cfg.task_logs.get(uuid)
     if not task_info:
         return
@@ -840,22 +840,32 @@ def write_task_summary(uuid, payload):
         logger.exception(f'write_task_summary错误：{e}', exc_info=True)
 
 
-def persist_task_log_artifacts(uuid, target_dir):
+def persist_task_log_artifacts(uuid, target_dir, basename=None):
     if not uuid or not target_dir:
-        return
+        return {}
     task_info = app_cfg.task_logs.get(uuid)
     if not task_info:
-        return
+        return {}
     try:
         dst_dir = Path(target_dir)
         dst_dir.mkdir(parents=True, exist_ok=True)
+        raw_prefix = Path(str(basename or uuid)).stem or uuid
+        safe_prefix = re.sub(r'[\\/:*?"<>|\s]+', '_', raw_prefix).strip('_') or uuid
+        safe_prefix = f"{safe_prefix}_{uuid}"
+        persisted = {}
         for key in ("log_path", "summary_path"):
             src = Path(task_info[key])
             if src.exists():
-                shutil.copy2(src, dst_dir / src.name)
+                suffix = "run.log" if key == "log_path" else "summary.json"
+                dst = dst_dir / f"{safe_prefix}_{suffix}"
+                shutil.copy2(src, dst)
+                persisted[key] = dst.as_posix()
+        return persisted
     except Exception as e:
         logger.exception(f'persist_task_log_artifacts错误：{e}', exc_info=True)
 
+
+    return {}
 
 def update_logging_level(new_level_str):
     """动态修改日志等级"""

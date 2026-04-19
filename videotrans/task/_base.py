@@ -101,6 +101,7 @@ class BaseTask(BaseCon):
 
     def _task_summary_payload(self, *, status="succeed", extra=None):
         task_log = config_module.app_cfg.task_logs.get(self.uuid, {})
+        persisted = task_log.get("persisted") or {}
         payload = {
             "uuid": self.uuid,
             "status": status,
@@ -115,8 +116,8 @@ class BaseTask(BaseCon):
             },
             "timing": self._timing_summary(),
             "task_log": {
-                "log_path": task_log.get("log_path"),
-                "summary_path": task_log.get("summary_path"),
+                "log_path": persisted.get("log_path") or task_log.get("log_path"),
+                "summary_path": persisted.get("summary_path") or task_log.get("summary_path"),
             },
         }
         if extra:
@@ -125,12 +126,24 @@ class BaseTask(BaseCon):
 
     def _finalize_task_logging(self, *, status="succeed", extra=None):
         self._ensure_task_logging()
-        payload = self._task_summary_payload(status=status, extra=extra)
-        config_module.write_task_summary(self.uuid, payload)
         persist_dir = getattr(self.cfg, "target_dir", None)
         if getattr(self.cfg, "only_out_mp4", False) and persist_dir:
             persist_dir = Path(persist_dir).parent.as_posix()
-        config_module.persist_task_log_artifacts(self.uuid, persist_dir)
+        persisted = config_module.persist_task_log_artifacts(
+            self.uuid,
+            persist_dir,
+            basename=getattr(self.cfg, "basename", None),
+        )
+        if persisted:
+            task_log = config_module.app_cfg.task_logs.get(self.uuid, {})
+            task_log["persisted"] = persisted
+        payload = self._task_summary_payload(status=status, extra=extra)
+        config_module.write_task_summary(self.uuid, payload)
+        config_module.persist_task_log_artifacts(
+            self.uuid,
+            persist_dir,
+            basename=getattr(self.cfg, "basename", None),
+        )
 
     # 预先处理，例如从视频中拆分音频、人声背景分离、转码等
     def prepare(self):

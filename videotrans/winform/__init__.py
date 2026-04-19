@@ -30,6 +30,7 @@ _module_map = {
 "fn_peiyin":".fn_peiyin",
 "fn_peiyinrole":".fn_peiyinrole",
 "fn_recogn":".fn_recogn",
+"fn_remove_subtitle":".fn_remove_subtitle",
 "fn_separate":".fn_separate",
 "fn_subtitlescover":".fn_subtitlescover",
 "fn_vas":".fn_vas",
