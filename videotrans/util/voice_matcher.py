@@ -225,11 +225,20 @@ def _try_gender_match(
         g, med = detect_gender_and_f0_from_wav(wav)
         spk_gender[spk_id] = g
         spk_f0[spk_id] = med
-    logger.info(
+    audit_line = (
         f'[voice_matcher] spk F0 性别判定: {spk_gender} '
         f'f0_medians={ {k: round(v,1) if v else None for k,v in spk_f0.items()} } '
         f'(pool stats={stats})'
     )
+    logger.info(audit_line)
+    # 把审计结果写入 details 特殊键, 让任务侧 (trans_create._signal) 能把此信息
+    # 推送到 run.log —— logger.info 只进程内日志, 排错时看不到
+    details.setdefault('_audit', {})
+    details['_audit'].update({
+        'spk_gender': dict(spk_gender),
+        'spk_f0': {k: (round(v, 1) if v else None) for k, v in spk_f0.items()},
+        'pool_stats': dict(stats),
+    })
 
     # 卫生检查: 池内明显男女双全 (各 ≥ 2) 但待分配 spk 缺失某一性别 → F0 可能被 BGM 污染
     # victim 选择策略 (按 F0 数值而非标签, 对真实性别更鲁棒):
@@ -262,10 +271,17 @@ def _try_gender_match(
             if victim is None:
                 any_spks = [sid for sid, g in zip(pending, detected) if g == 'any']
                 victim = any_spks[-1] if any_spks else pending[-1]
-            logger.warning(
+            flip_line = (
                 f'[voice_matcher] 待分配 spk 性别分布 {dict(zip(pending, detected))} 缺 {flip_target}; '
                 f'按 F0 选 victim={victim} (f0={spk_f0.get(victim)}); 强制切换到 {flip_target} 池'
             )
+            logger.warning(flip_line)
+            details['_audit']['flip'] = {
+                'detected': dict(zip(pending, detected)),
+                'missing': flip_target,
+                'victim': victim,
+                'victim_f0': spk_f0.get(victim),
+            }
             spk_gender[victim] = flip_target
 
     f_cursor = 0
@@ -306,7 +322,13 @@ def _try_gender_match(
             chosen = current_pool[0]
         if chosen:
             result[spk_id] = chosen
-            details[spk_id] = {"voice": chosen, "method": "gender", "score": None, "gender": gender}
+            details[spk_id] = {
+                "voice": chosen,
+                "method": "gender",
+                "score": None,
+                "gender": gender,
+                "f0": (round(spk_f0.get(spk_id), 1) if isinstance(spk_f0.get(spk_id), (int, float)) else None),
+            }
             used.add(chosen)
             logger.info(f"[voice_matcher] {spk_id} gender={gender} -> {chosen}")
     return True

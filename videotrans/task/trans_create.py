@@ -1451,16 +1451,34 @@ class TransCreate(BaseTask):
         logger.info(f'Step4 auto-match Qwen3Local Speaker→Voice {spk_voice_map}')
         # 把每个 spk 的匹配依据 (embedding/gender/round_robin + 分数) 送进任务 log, 便于排错
         details = matched.get('details', {}) or {}
+        audit = details.get('_audit') if isinstance(details, dict) else None
+        if isinstance(audit, dict):
+            self._signal(
+                text=f"[voice_matcher] spk F0 判定: gender={audit.get('spk_gender')} "
+                     f"f0_medians={audit.get('spk_f0')} pool={audit.get('pool_stats')}"
+            )
+            flip = audit.get('flip')
+            if isinstance(flip, dict):
+                self._signal(
+                    text=f"[voice_matcher] 性别翻转: 缺 {flip.get('missing')}; "
+                         f"victim={flip.get('victim')} (f0={flip.get('victim_f0')}); "
+                         f"检测分布={flip.get('detected')}"
+                )
         for spk_id, info in details.items():
+            if spk_id == '_audit' or not isinstance(info, dict):
+                continue
             method = info.get('method', '?')
             voice = info.get('voice', '?')
             score = info.get('score')
             gender = info.get('gender')
+            f0 = info.get('f0')
             extra = []
             if score is not None:
                 extra.append(f'score={score}')
             if gender:
                 extra.append(f'gender={gender}')
+            if f0 is not None:
+                extra.append(f'f0={f0}')
             suffix = f' ({", ".join(extra)})' if extra else ''
             self._signal(text=f'  {spk_id} -> {voice} [{method}]{suffix}')
         self._signal(text=f'Speaker -> Voice: {spk_voice_map}')
@@ -1522,16 +1540,34 @@ class TransCreate(BaseTask):
         logger.info(f'Step4 auto-match QwenTTS Speaker→Voice {spk_voice_map}')
         # 把每个 spk 的匹配依据 (embedding/gender/round_robin + 分数 + F0 判定性别) 送进任务 log, 便于排错
         details = matched.get('details', {}) or {}
+        audit = details.get('_audit') if isinstance(details, dict) else None
+        if isinstance(audit, dict):
+            self._signal(
+                text=f"[voice_matcher] spk F0 判定: gender={audit.get('spk_gender')} "
+                     f"f0_medians={audit.get('spk_f0')} pool={audit.get('pool_stats')}"
+            )
+            flip = audit.get('flip')
+            if isinstance(flip, dict):
+                self._signal(
+                    text=f"[voice_matcher] 性别翻转: 缺 {flip.get('missing')}; "
+                         f"victim={flip.get('victim')} (f0={flip.get('victim_f0')}); "
+                         f"检测分布={flip.get('detected')}"
+                )
         for spk_id, info in details.items():
+            if spk_id == '_audit' or not isinstance(info, dict):
+                continue
             method = info.get('method', '?')
             voice = info.get('voice', '?')
             score = info.get('score')
             gender = info.get('gender')
+            f0 = info.get('f0')
             extra = []
             if score is not None:
                 extra.append(f'score={score}')
             if gender:
                 extra.append(f'gender={gender}')
+            if f0 is not None:
+                extra.append(f'f0={f0}')
             suffix = f' ({", ".join(extra)})' if extra else ''
             self._signal(text=f'  {spk_id} -> {voice} [{method}]{suffix}')
         self._signal(text=f'Speaker -> Voice: {spk_voice_map}')
