@@ -1390,7 +1390,42 @@ class TransCreate(BaseTask):
             spk_id: voice_pool[idx % len(voice_pool)]
             for idx, spk_id in enumerate(unique_spks)
         }
+        speaker_refs = {}
+        series_details = {}
+        try:
+            refs_json = Path(self.cfg.cache_folder + "/speaker_refs.json")
+            if refs_json.exists():
+                ref_info = json.loads(refs_json.read_text(encoding='utf-8'))
+                for spk_id, data in (ref_info or {}).items():
+                    if isinstance(data, dict) and data.get('wav') and Path(data['wav']).exists():
+                        speaker_refs[spk_id] = data['wav']
+            if speaker_refs:
+                from videotrans.util.series_voice_map import reuse_voice_mapping
+                series_map, series_details = reuse_voice_mapping(
+                    video_path=self.cfg.name,
+                    target_dir=self.cfg.target_dir,
+                    speaker_refs=speaker_refs,
+                    tts_type=self.cfg.tts_type,
+                )
+                if series_map:
+                    spk_voice_map.update(series_map)
+                    self._signal(text=f'Series voice reuse: {series_map}')
+        except Exception as e:
+            logger.warning(f'[series_voice] Edge map reuse/update failed: {e}')
         self._apply_speaker_voice_overrides(spk_voice_map)
+        if speaker_refs:
+            try:
+                from videotrans.util.series_voice_map import update_voice_mapping
+                update_voice_mapping(
+                    video_path=self.cfg.name,
+                    target_dir=self.cfg.target_dir,
+                    speaker_refs=speaker_refs,
+                    spk_voice_map=spk_voice_map,
+                    tts_type=self.cfg.tts_type,
+                    details=series_details,
+                )
+            except Exception as e:
+                logger.warning(f'[series_voice] Edge map update failed: {e}')
         logger.info(f'Step4 说话人音色映射: {spk_voice_map}')
         # 同时输出到 CLI，方便调试
         self._signal(text=f'Speaker → Voice: {spk_voice_map}')
@@ -1421,6 +1456,18 @@ class TransCreate(BaseTask):
                 speaker_refs[spk_id] = data['wav']
         if not speaker_refs:
             return None, None
+        series_existing = {}
+        series_details = {}
+        try:
+            from videotrans.util.series_voice_map import reuse_voice_mapping
+            series_existing, series_details = reuse_voice_mapping(
+                video_path=self.cfg.name,
+                target_dir=self.cfg.target_dir,
+                speaker_refs=speaker_refs,
+                tts_type=self.cfg.tts_type,
+            )
+        except Exception as e:
+            logger.warning(f'[series_voice] qwen3local reuse failed: {e}')
         try:
             from videotrans.util.voice_matcher import match_voices_to_speakers_verbose
             rolelist = tools.get_qwenttslocal_rolelist()
@@ -1428,8 +1475,11 @@ class TransCreate(BaseTask):
                 speaker_refs=speaker_refs,
                 all_voices=list(rolelist.keys()),
                 tts_type=self.cfg.tts_type,
+                existing=series_existing,
             )
             spk_voice_map = matched.get('mapping', {})
+            if series_details:
+                matched.setdefault('details', {}).update(series_details)
             detail_path = Path(self.cfg.cache_folder + "/auto_match_detail.json")
             detail_path.write_text(
                 json.dumps(matched.get('details', {}), ensure_ascii=False, indent=2),
@@ -1441,6 +1491,18 @@ class TransCreate(BaseTask):
         if not spk_voice_map:
             return None, None
         self._apply_speaker_voice_overrides(spk_voice_map, matched.get('details', {}) if isinstance(matched, dict) else {})
+        try:
+            from videotrans.util.series_voice_map import update_voice_mapping
+            update_voice_mapping(
+                video_path=self.cfg.name,
+                target_dir=self.cfg.target_dir,
+                speaker_refs=speaker_refs,
+                spk_voice_map=spk_voice_map,
+                tts_type=self.cfg.tts_type,
+                details=matched.get('details', {}) if isinstance(matched, dict) else {},
+            )
+        except Exception as e:
+            logger.warning(f'[series_voice] qwen3local update failed: {e}')
         try:
             detail_path.write_text(
                 json.dumps(matched.get('details', {}), ensure_ascii=False, indent=2),
@@ -1504,6 +1566,18 @@ class TransCreate(BaseTask):
                 speaker_refs[spk_id] = data['wav']
         if not speaker_refs:
             return None, None
+        series_existing = {}
+        series_details = {}
+        try:
+            from videotrans.util.series_voice_map import reuse_voice_mapping
+            series_existing, series_details = reuse_voice_mapping(
+                video_path=self.cfg.name,
+                target_dir=self.cfg.target_dir,
+                speaker_refs=speaker_refs,
+                tts_type=self.cfg.tts_type,
+            )
+        except Exception as e:
+            logger.warning(f'[series_voice] qwentts reuse failed: {e}')
 
         try:
             from videotrans.util.voice_matcher import match_voices_to_speakers_verbose
@@ -1516,8 +1590,11 @@ class TransCreate(BaseTask):
                 speaker_refs=speaker_refs,
                 all_voices=available_voices,
                 tts_type=self.cfg.tts_type,
+                existing=series_existing,
             )
             spk_voice_map = matched.get('mapping', {})
+            if series_details:
+                matched.setdefault('details', {}).update(series_details)
             detail_path = Path(self.cfg.cache_folder + "/auto_match_detail_qwentts.json")
             detail_path.write_text(
                 json.dumps(matched.get('details', {}), ensure_ascii=False, indent=2),
@@ -1530,6 +1607,18 @@ class TransCreate(BaseTask):
         if not spk_voice_map:
             return None, None
         self._apply_speaker_voice_overrides(spk_voice_map, matched.get('details', {}) if isinstance(matched, dict) else {})
+        try:
+            from videotrans.util.series_voice_map import update_voice_mapping
+            update_voice_mapping(
+                video_path=self.cfg.name,
+                target_dir=self.cfg.target_dir,
+                speaker_refs=speaker_refs,
+                spk_voice_map=spk_voice_map,
+                tts_type=self.cfg.tts_type,
+                details=matched.get('details', {}) if isinstance(matched, dict) else {},
+            )
+        except Exception as e:
+            logger.warning(f'[series_voice] qwentts update failed: {e}')
         try:
             detail_path.write_text(
                 json.dumps(matched.get('details', {}), ensure_ascii=False, indent=2),
@@ -1672,6 +1761,32 @@ class TransCreate(BaseTask):
         #   b) 新角色 → 用本集 spkN_ref.wav 作为素材扩充入库, 然后替换 ref_wav
         # 匿名说话人 (未在映射里) 完全走原路径, 不入库
         self._apply_voice_library(valid_map)
+        try:
+            from videotrans.util.series_voice_map import reuse_clone_refs, update_clone_refs
+            reused_refs, reused_details = reuse_clone_refs(
+                video_path=self.cfg.name,
+                target_dir=self.cfg.target_dir,
+                speaker_refs=valid_map,
+                tts_type=self.cfg.tts_type,
+            )
+            if reused_refs:
+                valid_map.update(reused_refs)
+                self._signal(text=f'Series clone ref reuse: {list(reused_refs.keys())}')
+                config_module.write_task_log(
+                    self.uuid,
+                    text=f'Series clone ref reuse: {reused_details}',
+                    level='INFO',
+                    event_type='series_clone_ref',
+                    extra=reused_details,
+                )
+            update_clone_refs(
+                video_path=self.cfg.name,
+                target_dir=self.cfg.target_dir,
+                speaker_refs=valid_map,
+                tts_type=self.cfg.tts_type,
+            )
+        except Exception as e:
+            logger.warning(f'[series_voice] clone ref reuse/update failed: {e}')
 
         summary = ', '.join(f'{k}→{Path(v["wav"]).name}' for k, v in valid_map.items())
         logger.info(f'Step5 克隆参考音频映射: {summary}')

@@ -409,6 +409,7 @@ class AppSettings:
             "process_max": 1,
             "process_max_gpu": 1,
             "multi_gpus": False,
+            "series_voice_match_threshold": 0.72,
             "azure_lines": 1,
             "chattts_voice": ChatTTS_VOICE,
             "proxy": "",
