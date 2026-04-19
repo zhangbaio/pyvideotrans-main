@@ -65,6 +65,9 @@ class WinAction(WinActionSub):
         else:
             self.main.output_srt.setCurrentIndex(2)
             self.main.output_srt.show()
+        self.main.remove_hardsub_before_subtitle.setEnabled(idx > 0)
+        if idx < 1:
+            self.main.remove_hardsub_before_subtitle.setChecked(False)
 
 
     def show_xxl_select(self):
@@ -551,6 +554,14 @@ class WinAction(WinActionSub):
         self.cfg['voice_autorate'] = self.main.voice_autorate.isChecked()
         self.cfg['video_autorate'] = self.main.video_autorate.isChecked()
         self.cfg['enable_lipsync'] = self.main.enable_lipsync.isChecked()
+        self.cfg['remove_hardsub_before_subtitle'] = self.main.remove_hardsub_before_subtitle.isChecked()
+        self.cfg['vsr_install_path'] = str(settings.get('vsr_install_path', '') or '').strip()
+        self.cfg['vsr_sub_area'] = str(settings.get('vsr_sub_area', 'auto') or 'auto').strip()
+        try:
+            self.cfg['vsr_timeout_sec'] = int(settings.get('vsr_timeout_sec', 3600) or 3600)
+        except (TypeError, ValueError):
+            self.cfg['vsr_timeout_sec'] = 3600
+        self.cfg['vsr_fail_policy'] = str(settings.get('vsr_fail_policy', 'stop') or 'stop').strip().lower()
 
         # 人声背景音分离 添加背景音频
         self.cfg['is_separate'] = self.main.is_separate.isChecked()
@@ -608,6 +619,9 @@ class WinAction(WinActionSub):
             self.main.startbtn.setDisabled(False)
             return tools.show_error(
                 tr("Target language must be selected to embed subtitles"))
+        if self.cfg.get('remove_hardsub_before_subtitle') and self.cfg.get('subtitle_type', 0) < 1:
+            self.main.startbtn.setDisabled(False)
+            return tools.show_error("需要选择一种字幕输出方式，才能在写入新字幕前去除旧硬字幕")
         
         # 核对是否存在名字相同后缀不同的文件，以及若存在音频则强制为tiqu模式
         if self.check_name() is not True:
@@ -648,6 +662,8 @@ class WinAction(WinActionSub):
         self.set_mode()
         self.cfg['app_mode'] = self.main.app_mode
         self.cfg['output_srt']=self.main.output_srt.currentIndex()
+        if self.cfg['app_mode'] == 'tiqu' or self.cfg.get('subtitle_type', 0) < 1:
+            self.cfg['remove_hardsub_before_subtitle'] = False
         logger.debug(
             f"[SubtitleType][After set_mode] app_mode={self.main.app_mode} "
             f"cfg_subtitle_type={self.cfg.get('subtitle_type')} "

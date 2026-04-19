@@ -402,7 +402,12 @@ class AppSettings:
             "multi_gpus": False,
             "azure_lines": 1,
             "chattts_voice": ChatTTS_VOICE,
-            "proxy": ""
+            "proxy": "",
+            "vsr_enable": False,
+            "vsr_install_path": "",
+            "vsr_sub_area": "auto",
+            "vsr_timeout_sec": 3600,
+            "vsr_fail_policy": "stop",
         }
 
     def _apply_dict(self, data: Dict):
@@ -705,6 +710,11 @@ class AppParams:
             "dubb_pitch_rate": 0,
             "dubb_volume_rate": 0,
             "recogn2pass": True,
+            "remove_hardsub_before_subtitle": False,
+            "vsr_install_path": "",
+            "vsr_sub_area": "auto",
+            "vsr_timeout_sec": 3600,
+            "vsr_fail_policy": "stop",
             "enable_lipsync": False,
             "lipsync_engine": "musetalk",
             "lipsync_model_root": "",

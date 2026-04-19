@@ -142,6 +142,8 @@
     "Dubbing speed": "Dubbing Rate",
     "Enable lip sync": "Enable lip sync",
     "Generate a lip-synced video from the dubbed audio using MuseTalk when available.": "Generate a lip-synced video from the dubbed audio using MuseTalk when available.",
+    "Remove old hard subtitles": "Remove old hard subtitles",
+    "Before writing new subtitles, remove hard subtitles already burned into the video frames.": "Before writing new subtitles, remove hard subtitles already burned into the video frames.",
     "Dubbing succeeded {}，failed {}": "Success: {}, Failed: {}",
     "Duration of each segment/second": "Seg Duration (Batch Mode)",
     "Dutch": "Dutch",

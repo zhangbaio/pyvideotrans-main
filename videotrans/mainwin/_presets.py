@@ -54,6 +54,7 @@ SETTERS: list[tuple[str, str, str]] = [
     ('voice_autorate',    'voice_autorate',    'checked'),
     ('video_autorate',    'video_autorate',    'checked'),
     ('enable_lipsync',    'enable_lipsync',    'checked'),
+    ('remove_hardsub_before_subtitle', 'remove_hardsub_before_subtitle', 'checked'),
     ('is_separate',       'is_separate',       'checked'),
     ('embed_bgm',         'embed_bgm',         'checked'),
     ('is_cuda',           'enable_cuda',       'checked'),

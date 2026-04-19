@@ -429,99 +429,127 @@ class TransCreate(BaseTask):
         self._signal(text='Lip sync finished')
         self._stage_end("lipsync")
 
-    def _maybe_remove_hardsub(self) -> None:
+    def _resolve_vsr_install_path(self) -> str:
+        configured = str(getattr(self.cfg, 'vsr_install_path', '') or '').strip()
+        if configured:
+            return configured
+        candidates = [
+            Path(ROOT_DIR) / 'tools' / 'video-subtitle-remover-src',
+            Path(ROOT_DIR) / 'tools' / 'video-subtitle-remover',
+        ]
+        for candidate in candidates:
+            if (candidate / 'backend' / 'main.py').exists() or (candidate / 'main.py').exists():
+                return candidate.as_posix()
+        return ''
+
+    def _maybe_remove_hardsub_before_subtitle(self) -> None:
         """
-        P0: 去除视频硬字幕 (video-subtitle-remover 外部进程).
+        在最终写入新字幕前，先去除视频底片中的硬字幕。
 
         启用条件 (全部满足):
-          - settings['vsr_enable'] 为 True
-          - settings['vsr_install_path'] 指向有效 VSR 安装目录
-          - self.cfg.name 是有效视频文件
+          - cfg.remove_hardsub_before_subtitle 为 True
+          - subtitle_type > 0
+          - VSR 安装目录有效，或打包目录内有 bundled VSR
+          - self.cfg.novoice_mp4 是有效视频底片
           - self.is_audio_trans / app_mode=='tiqu' 时不跑 (没视频可去)
-          - 已经去过一次 (cache 里有 _dehardsub.mp4) 则直接复用
+          - 已经去过一次 (cache 里有 _dehardsub_novoice.mp4) 则直接复用
 
-        失败策略: 记日志 + 通知 UI, 不抛异常, 保留原视频继续走主流程.
+        失败策略:
+          - vsr_fail_policy == 'continue' 时继续用原视频底片
+          - 默认 stop，避免旧硬字幕和新字幕叠在一起
         """
         try:
-            from videotrans.configure.config import settings
             from videotrans.util import dehardsub as _dehardsub
         except Exception as e:
             logger.warning(f'[dehardsub] 模块导入失败, 跳过: {e}')
             return
 
-        if not settings.get('vsr_enable', False):
+        if not getattr(self.cfg, 'remove_hardsub_before_subtitle', False):
+            return
+        if getattr(self.cfg, 'subtitle_type', 0) < 1:
             return
         if getattr(self, 'is_audio_trans', False) or getattr(self.cfg, 'app_mode', '') == 'tiqu':
             return
-        install_path = str(settings.get('vsr_install_path', '') or '').strip()
+
+        fail_policy = str(getattr(self.cfg, 'vsr_fail_policy', 'stop') or 'stop').strip().lower()
+        install_path = self._resolve_vsr_install_path()
         if not install_path:
-            logger.info('[dehardsub] vsr_enable=True 但未配置 vsr_install_path, 跳过')
-            self._signal(text='未配置 vsr_install_path, 跳过硬字幕去除')
+            msg = '未配置 VSR 目录，且未找到内置 video-subtitle-remover-src'
+            logger.warning(f'[dehardsub] {msg}')
+            self._signal(text=f'硬字幕去除失败: {msg}')
+            if fail_policy != 'continue':
+                raise RuntimeError(msg)
             return
 
-        src_video = self.cfg.name
+        src_video = self.cfg.novoice_mp4
         if not src_video or not Path(src_video).exists():
+            msg = f'无声视频底片不存在，无法去硬字幕: {src_video}'
+            logger.warning(f'[dehardsub] {msg}')
+            if fail_policy != 'continue':
+                raise RuntimeError(msg)
             return
 
         self._stage_start('dehardsub')
-        # 幂等: 同一源视频二次跑任务时复用缓存产物
-        Path(self.cfg.cache_folder).mkdir(parents=True, exist_ok=True)
-        out_path = str(Path(self.cfg.cache_folder) / '_dehardsub.mp4')
-        if Path(out_path).exists() and Path(out_path).stat().st_size > 1024:
-            logger.info(f'[dehardsub] 复用缓存产物: {out_path}')
-            self._signal(text='复用已去硬字幕的缓存视频')
-            if not getattr(self.cfg, 'name_origin', None):
-                self.cfg.name_origin = src_video
-            self.cfg.name = out_path
-            self._stage_end('dehardsub')
-            return
-
-        self._signal(text=tr('Hold on a monment...'))
-        ok, reason = _dehardsub.is_available(install_path)
-        if not ok:
-            logger.warning(f'[dehardsub] 跳过: {reason}')
-            self._signal(text=f'硬字幕去除跳过: {reason}')
-            self._stage_end('dehardsub')
-            return
-
-        # 拿视频宽高, 支持 'bottom:0.15' 这种相对区域
         try:
-            video_info = tools.get_video_info(src_video)
-        except Exception:
-            video_info = None
+            Path(self.cfg.cache_folder).mkdir(parents=True, exist_ok=True)
+            out_path = str(Path(self.cfg.cache_folder) / '_dehardsub_novoice.mp4')
+            if Path(out_path).exists() and Path(out_path).stat().st_size > 1024:
+                logger.info(f'[dehardsub] 复用缓存产物: {out_path}')
+                self._signal(text='复用已去硬字幕的视频底片')
+                self.cfg.novoice_mp4 = out_path
+                return
 
-        area_cfg = str(settings.get('vsr_sub_area', '') or '').strip()
-        timeout_sec = int(settings.get('vsr_timeout_sec', 3600) or 3600)
+            self._signal(text='写入新字幕前，正在去除原视频硬字幕...')
+            ok, reason = _dehardsub.is_available(install_path)
+            if not ok:
+                logger.warning(f'[dehardsub] 不可用: {reason}')
+                self._signal(text=f'硬字幕去除失败: {reason}')
+                if fail_policy != 'continue':
+                    raise RuntimeError(reason)
+                return
 
-        try:
-            success, msg = _dehardsub.remove_hardsub(
-                video_path=src_video,
-                output_path=out_path,
-                install_path=install_path,
-                cache_folder=self.cfg.cache_folder,
-                sub_area_cfg=area_cfg,
-                video_info=video_info,
-                timeout_sec=timeout_sec,
-                progress_cb=lambda t: self._signal(text=t),
-            )
-        except Exception as e:
-            logger.exception(f'[dehardsub] 调用异常: {e}')
-            success, msg = False, str(e)
+            try:
+                video_info = tools.get_video_info(src_video)
+            except Exception:
+                video_info = self.video_info or None
 
-        if success:
-            self.cfg.name_origin = src_video
-            self.cfg.name = out_path
-            self._signal(text=f'硬字幕去除完成: {msg}')
-            logger.info(f'[dehardsub] 已替换输入视频 -> {out_path}')
-        else:
-            logger.warning(f'[dehardsub] 失败, 保留原视频: {msg}')
-            self._signal(text=f'硬字幕去除失败, 继续使用原视频: {msg}')
-        self._stage_end('dehardsub')
+            area_cfg = str(getattr(self.cfg, 'vsr_sub_area', '') or '').strip()
+            try:
+                timeout_sec = int(getattr(self.cfg, 'vsr_timeout_sec', 3600) or 3600)
+            except (TypeError, ValueError):
+                timeout_sec = 3600
+
+            try:
+                success, msg = _dehardsub.remove_hardsub(
+                    video_path=src_video,
+                    output_path=out_path,
+                    install_path=install_path,
+                    cache_folder=self.cfg.cache_folder,
+                    sub_area_cfg=area_cfg,
+                    video_info=video_info,
+                    timeout_sec=timeout_sec,
+                    progress_cb=lambda t: self._signal(text=t),
+                )
+            except Exception as e:
+                logger.exception(f'[dehardsub] 调用异常: {e}')
+                success, msg = False, str(e)
+
+            if success:
+                self.cfg.novoice_mp4_origin = src_video
+                self.cfg.novoice_mp4 = out_path
+                self._signal(text=f'硬字幕去除完成，开始写入新字幕: {msg}')
+                logger.info(f'[dehardsub] 已替换视频底片 -> {out_path}')
+                return
+
+            logger.warning(f'[dehardsub] 失败: {msg}')
+            self._signal(text=f'硬字幕去除失败: {msg}')
+            if fail_policy != 'continue':
+                raise RuntimeError(f'硬字幕去除失败: {msg}')
+        finally:
+            self._stage_end('dehardsub')
 
     def prepare(self) -> None:
         if self._exit(): return
-        # P0: 去除视频硬字幕 (可选, 失败静默回退, 不阻断主流程)
-        self._maybe_remove_hardsub()
         self._stage_start("prepare")
         self._signal(text=tr("Hold on a monment..."))
         Path(self.cfg.cache_folder).mkdir(parents=True, exist_ok=True)
@@ -2508,6 +2536,7 @@ class TransCreate(BaseTask):
         # 处理所需字幕
         subtitles_file, subtitle_langcode = None, None
         if self.cfg.subtitle_type > 0:
+            self._maybe_remove_hardsub_before_subtitle()
             subtitles_file, subtitle_langcode = self._process_subtitles()
 
         # 字幕嵌入时进入视频目录下

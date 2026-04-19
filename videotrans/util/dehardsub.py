@@ -119,7 +119,10 @@ def _probe_python(install_path: Path) -> Optional[str]:
     is_win = sys.platform.startswith('win')
     py_name = 'python.exe' if is_win else 'python'
     venv_scripts = 'Scripts' if is_win else 'bin'
+    sibling_env = install_path.parent / 'video-subtitle-remover-env'
     candidates = [
+        sibling_env / py_name,                         # pyVideoTrans 打包内置 portable 布局
+        sibling_env / venv_scripts / py_name,          # pyVideoTrans 打包内置 venv/conda 布局
         install_path / 'python' / py_name,            # 作者整合包常见布局
         install_path / 'runtime' / py_name,           # 另一种整合布局
         install_path / 'venv' / venv_scripts / py_name,
@@ -128,8 +131,25 @@ def _probe_python(install_path: Path) -> Optional[str]:
     for p in candidates:
         if p.exists():
             return str(p)
-    # 最后回退: 当前进程的 python (要求用户自己把 pyvideotrans 和 VSR 装在同一个 env)
-    return sys.executable
+    # 最后回退: 当前进程的 python (仅源码运行时可用；打包后 sys.executable 是 pyVideoTrans.exe)
+    exe_name = Path(sys.executable).name.lower()
+    if exe_name.startswith('python'):
+        return sys.executable
+    return None
+
+
+def _subprocess_env(python_bin: str) -> dict:
+    env = os.environ.copy()
+    py_path = Path(python_bin)
+    runtime_dir = py_path.parent.parent if py_path.parent.name.lower() in {'scripts', 'bin'} else py_path.parent
+    path_parts = [
+        str(py_path.parent),
+        str(runtime_dir),
+        str(runtime_dir / 'Library' / 'bin'),
+        str(runtime_dir / 'DLLs'),
+    ]
+    env['PATH'] = os.pathsep.join(path_parts + [env.get('PATH', '')])
+    return env
 
 
 def _has_backend(install_path: Path) -> bool:
@@ -435,6 +455,7 @@ def remove_hardsub(
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             cwd=str(install),
+            env=_subprocess_env(py),
             encoding='utf-8',
             errors='replace',
             bufsize=1,
