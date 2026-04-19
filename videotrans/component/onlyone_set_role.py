@@ -30,6 +30,8 @@ class SpeakerAssignmentDialog(QDialog):
             return f'{voice_name} [embedding]'
         if method == 'gender':
             return f'{voice_name} [gender]'
+        if method == 'manual_override':
+            return f'{voice_name} [manual]'
         if method == 'round_robin':
             return f'{voice_name} [fallback]'
         return voice_name
@@ -601,11 +603,11 @@ class SpeakerAssignmentDialog(QDialog):
 
         bottom_row = QHBoxLayout()
         assignable_voices = ['No'] + self._candidate_voices()
-        if self.managed_role_mode and self.default_role and self.default_role not in assignable_voices:
+        if self.clone_mode and self.default_role and self.default_role not in assignable_voices:
             assignable_voices.append(self.default_role)
         self.speaker_combo = QComboBox()
         self.speaker_combo.addItems(assignable_voices)
-        if self.managed_role_mode and self.default_role:
+        if self.clone_mode and self.default_role:
             self.speaker_combo.setCurrentText(self.default_role)
         
         lbl = QLabel(tr('Dubbing role'))
@@ -628,11 +630,11 @@ class SpeakerAssignmentDialog(QDialog):
         bottom_row.addWidget(reassign_button)
 
         if self.managed_role_mode:
-            self.speaker_combo.setDisabled(True)
-            assign_button.setDisabled(True)
             if self.auto_match_mode:
                 reassign_button.setText(tr("Auto rematch"))
             else:
+                self.speaker_combo.setDisabled(True)
+                assign_button.setDisabled(True)
                 reassign_button.setDisabled(True)
 
         bottom_row.addStretch()
@@ -770,8 +772,16 @@ class SpeakerAssignmentDialog(QDialog):
 
         for check, spk_id in self.speaker_checks.items():
             if check.isChecked():
+                old_role = self.speakers.get(spk_id)
                 self.speakers[spk_id] = role_value
                 self.auto_assigned_speakers.discard(spk_id)
+                if self.auto_match_mode:
+                    self.auto_match_detail[spk_id] = {
+                        "voice": role_value,
+                        "method": "manual_override",
+                        "score": None,
+                        "previous_voice": old_role,
+                    }
                 self.speaker_labels[check].setText(self._speaker_label_text(spk_id, selected_role if role_value else ""))
                 self.speaker_labels[check].setStyleSheet("color: #ffcccc;")
                 check.setChecked(False)
@@ -926,11 +936,22 @@ class SpeakerAssignmentDialog(QDialog):
 
             # 角色保存逻辑
             role = data.get('role', '')
-            if not role and self.speakers and data['spk'] and not self.managed_role_mode:
+            if not role and self.speakers and data['spk'] and (not self.managed_role_mode or self.auto_match_mode):
                 role = self.speakers.get(data['spk'], '')
 
             if role:
                 app_cfg.line_roles[str(data["line"])] = role
+
+        if self.auto_match_mode and self.speakers:
+            try:
+                overrides = {spk_id: voice for spk_id, voice in self.speakers.items() if voice}
+                Path(f'{self.cache_folder}/speaker_voice_overrides.json').write_text(
+                    json.dumps(overrides, ensure_ascii=False, indent=2),
+                    encoding='utf-8'
+                )
+                logger.info(f'[SpeakerVoiceOverride] UI saved: {overrides}')
+            except Exception as e:
+                logger.warning(f'[SpeakerVoiceOverride] 写入 speaker_voice_overrides.json 失败: {e}')
 
         try:
             Path(self.target_sub).write_text("\n\n".join(srt_str_list), encoding="utf-8")

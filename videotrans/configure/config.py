@@ -719,6 +719,7 @@ class AppParams:
             "dubb_pitch_rate": 0,
             "dubb_volume_rate": 0,
             "recogn2pass": True,
+            "speaker_voice_overrides": "",
             "remove_hardsub_before_subtitle": False,
             "vsr_install_path": "",
             "vsr_sub_area": "auto",

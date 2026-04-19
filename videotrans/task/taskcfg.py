@@ -76,6 +76,7 @@ class TaskCfgVTT(TaskCfgSTT, TaskCfgTTS, TaskCfgSTS):
     recogn2pass: bool = False
     output_srt: int = 0
     copysrt_rawvideo: bool = False
+    speaker_voice_overrides: str = ""
     remove_hardsub_before_subtitle: bool = False
     vsr_install_path: str = ""
     vsr_sub_area: str = "auto"

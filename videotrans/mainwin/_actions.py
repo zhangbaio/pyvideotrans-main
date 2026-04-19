@@ -577,6 +577,7 @@ class WinAction(WinActionSub):
         self.cfg['back_audio'] = self.main.back_audio.text().strip()
         self.cfg['enable_diariz'] = self.main.enable_diariz.isChecked()
         self.cfg['recogn2pass'] = self.main.recogn2pass.isChecked()
+        self.cfg['speaker_voice_overrides'] = str(params.get('speaker_voice_overrides', '') or '').strip()
         self.cfg['nums_diariz'] = self.main.nums_diariz.currentIndex()
         if self.main.app_mode == 'replace_voice' and self.cfg['tts_type'] == tts.QWEN3LOCAL_TTS and self.cfg['voice_role'] == 'auto-match':
             self.cfg['enable_diariz'] = True

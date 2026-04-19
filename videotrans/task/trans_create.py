@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import List, Dict, Union
 
 from videotrans import translator
+from videotrans.configure import config as config_module
 from videotrans.configure.config import ROOT_DIR,tr,app_cfg,settings,params,TEMP_DIR,logger,defaulelang,HOME_DIR
 from videotrans.recognition import run as run_recogn, Faster_Whisper_XXL, Whisper_CPP, \
     is_allow_lang as recogn_allow_lang, FASTER_WHISPER
@@ -1387,6 +1388,7 @@ class TransCreate(BaseTask):
             spk_id: voice_pool[idx % len(voice_pool)]
             for idx, spk_id in enumerate(unique_spks)
         }
+        self._apply_speaker_voice_overrides(spk_voice_map)
         logger.info(f'Step4 说话人音色映射: {spk_voice_map}')
         # 同时输出到 CLI，方便调试
         self._signal(text=f'Speaker → Voice: {spk_voice_map}')
@@ -1436,6 +1438,14 @@ class TransCreate(BaseTask):
             return None, None
         if not spk_voice_map:
             return None, None
+        self._apply_speaker_voice_overrides(spk_voice_map, matched.get('details', {}) if isinstance(matched, dict) else {})
+        try:
+            detail_path.write_text(
+                json.dumps(matched.get('details', {}), ensure_ascii=False, indent=2),
+                encoding='utf-8'
+            )
+        except Exception:
+            pass
         logger.info(f'Step4 auto-match Qwen3Local Speaker→Voice {spk_voice_map}')
         # 把每个 spk 的匹配依据 (embedding/gender/round_robin + 分数) 送进任务 log, 便于排错
         details = matched.get('details', {}) or {}
@@ -1499,6 +1509,14 @@ class TransCreate(BaseTask):
 
         if not spk_voice_map:
             return None, None
+        self._apply_speaker_voice_overrides(spk_voice_map, matched.get('details', {}) if isinstance(matched, dict) else {})
+        try:
+            detail_path.write_text(
+                json.dumps(matched.get('details', {}), ensure_ascii=False, indent=2),
+                encoding='utf-8'
+            )
+        except Exception:
+            pass
         logger.info(f'Step4 auto-match QwenTTS Speaker→Voice {spk_voice_map}')
         # 把每个 spk 的匹配依据 (embedding/gender/round_robin + 分数 + F0 判定性别) 送进任务 log, 便于排错
         details = matched.get('details', {}) or {}
@@ -1516,6 +1534,70 @@ class TransCreate(BaseTask):
             self._signal(text=f'  {spk_id} -> {voice} [{method}]{suffix}')
         self._signal(text=f'Speaker -> Voice: {spk_voice_map}')
         return spk_list, spk_voice_map
+
+    def _parse_speaker_voice_overrides(self):
+        raw = str(getattr(self.cfg, 'speaker_voice_overrides', '') or '').strip()
+        if not raw:
+            raw = str(params.get('speaker_voice_overrides', '') or '').strip()
+        if not raw:
+            cache_override = Path(self.cfg.cache_folder or '', 'speaker_voice_overrides.json')
+            if cache_override.exists():
+                raw = cache_override.read_text(encoding='utf-8')
+        if not raw:
+            return {}
+        try:
+            if raw.startswith('{'):
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    return {str(k).strip(): str(v).strip() for k, v in data.items() if str(k).strip() and str(v).strip()}
+        except Exception as e:
+            logger.warning(f'[SpeakerVoiceOverride] JSON 解析失败，改用 key=value 解析: {e}')
+        overrides = {}
+        for part in re.split(r'[,;，；\n\r]+', raw):
+            part = part.strip()
+            if not part:
+                continue
+            if '=' in part:
+                key, value = part.split('=', 1)
+            elif ':' in part:
+                key, value = part.split(':', 1)
+            else:
+                continue
+            key = key.strip()
+            value = value.strip()
+            if key and value:
+                overrides[key] = value
+        return overrides
+
+    def _apply_speaker_voice_overrides(self, spk_voice_map, details=None):
+        overrides = self._parse_speaker_voice_overrides()
+        if not overrides or not spk_voice_map:
+            return spk_voice_map
+        details = details if isinstance(details, dict) else {}
+        applied = {}
+        for spk_id, voice in overrides.items():
+            if spk_id not in spk_voice_map:
+                logger.warning(f'[SpeakerVoiceOverride] 忽略不存在的 speaker: {spk_id}={voice}')
+                continue
+            old = spk_voice_map.get(spk_id)
+            spk_voice_map[spk_id] = voice
+            details[spk_id] = {
+                "voice": voice,
+                "method": "manual_override",
+                "score": None,
+                "previous_voice": old,
+            }
+            applied[spk_id] = {"old": old, "new": voice}
+        if applied:
+            logger.info(f'[SpeakerVoiceOverride] applied: {applied}')
+            config_module.write_task_log(
+                self.uuid,
+                text=f'Speaker voice overrides applied: {applied}',
+                level='INFO',
+                event_type='speaker_voice_override',
+                extra=applied,
+            )
+        return spk_voice_map
 
     def _build_speaker_ref_map(self):
         """
@@ -2101,19 +2183,47 @@ class TransCreate(BaseTask):
 
         # Voice 选择优先级: line_roles (手动) > spk_voice_map (Step4) > 'clone' (Step5) > voice_role (全局)
         # 取出每一条字幕，行号\n开始时间 --> 结束时间\n内容
+        line_voice_audit = []
         for i, it in enumerate(subs):
             if it['end_time'] < it['start_time'] or not it['text'].strip():
                 continue
             line_key = f'{it["line"]}'
+            speaker_id = spk_list[i] if spk_list and i < len(spk_list) else ''
+            voice_source = 'global'
             if line_key in line_roles:
                 voice = line_roles[line_key]
-            elif spk_voice_map and spk_list and i < len(spk_list):
-                voice = spk_voice_map.get(spk_list[i], voice_role)
-            elif spk_ref_map and spk_list and i < len(spk_list):
+                voice_source = 'line_roles'
+            elif spk_voice_map and speaker_id:
+                voice = spk_voice_map.get(speaker_id, voice_role)
+                voice_source = 'speaker_voice_map'
+            elif spk_ref_map and speaker_id:
                 # Step5 克隆模式：voice='clone' 触发下方 ref_wav 逻辑
                 voice = voice_role if self.cfg.tts_type == QWEN_TTS else 'clone'
+                voice_source = 'speaker_ref_map'
             else:
                 voice = voice_role
+
+            audit_row = {
+                "line": it['line'],
+                "start": it.get('startraw', ''),
+                "end": it.get('endraw', ''),
+                "speaker": speaker_id,
+                "voice": voice,
+                "source": voice_source,
+                "text": it['text'][:80],
+            }
+            line_voice_audit.append(audit_row)
+            config_module.write_task_log(
+                self.uuid,
+                text=(
+                    f"line={audit_row['line']} {audit_row['start']}->{audit_row['end']} "
+                    f"speaker={speaker_id or '-'} voice={voice} source={voice_source} "
+                    f"text={audit_row['text']}"
+                ),
+                level='INFO',
+                event_type='speaker_voice_line',
+                extra=audit_row,
+            )
 
             tmp_dict = {
                 "text": it['text'],
@@ -2172,6 +2282,15 @@ class TransCreate(BaseTask):
                     tmp_dict['ref_wav'] = f"{self.cfg.cache_folder}/clone-{i}.wav"
                 tmp_dict['ref_language'] = self.cfg.detect_language[:2]
             queue_tts.append(tmp_dict)
+
+        if line_voice_audit:
+            try:
+                Path(self.cfg.cache_folder, "speaker_voice_lines.json").write_text(
+                    json.dumps(line_voice_audit, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception as e:
+                logger.warning(f'[SpeakerVoiceAudit] 写入 speaker_voice_lines.json 失败: {e}')
 
         self.queue_tts = copy.deepcopy(queue_tts)
 
