@@ -563,6 +563,7 @@ class WinAction(WinActionSub):
         self.cfg['remove_hardsub_before_subtitle'] = self.main.remove_hardsub_before_subtitle.isChecked()
         self.cfg['vsr_install_path'] = str(settings.get('vsr_install_path', '') or '').strip()
         self.cfg['vsr_sub_area'] = str(settings.get('vsr_sub_area', 'auto') or 'auto').strip()
+        self.cfg['vsr_inpaint_mode'] = str(settings.get('vsr_inpaint_mode', 'sttn_auto') or 'sttn_auto').strip()
         try:
             self.cfg['vsr_timeout_sec'] = int(settings.get('vsr_timeout_sec', 3600) or 3600)
         except (TypeError, ValueError):

@@ -515,6 +515,7 @@ class TransCreate(BaseTask):
                 video_info = self.video_info or None
 
             area_cfg = str(getattr(self.cfg, 'vsr_sub_area', '') or '').strip()
+            inpaint_mode = str(getattr(self.cfg, 'vsr_inpaint_mode', 'sttn_auto') or 'sttn_auto').strip()
             try:
                 timeout_sec = int(getattr(self.cfg, 'vsr_timeout_sec', 3600) or 3600)
             except (TypeError, ValueError):
@@ -527,6 +528,7 @@ class TransCreate(BaseTask):
                     install_path=install_path,
                     cache_folder=self.cfg.cache_folder,
                     sub_area_cfg=area_cfg,
+                    inpaint_mode=inpaint_mode,
                     video_info=video_info,
                     timeout_sec=timeout_sec,
                     progress_cb=lambda t: self._signal(text=t),

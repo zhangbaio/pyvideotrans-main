@@ -80,6 +80,7 @@ class TaskCfgVTT(TaskCfgSTT, TaskCfgTTS, TaskCfgSTS):
     remove_hardsub_before_subtitle: bool = False
     vsr_install_path: str = ""
     vsr_sub_area: str = "auto"
+    vsr_inpaint_mode: str = "sttn_auto"
     vsr_timeout_sec: int = 3600
     vsr_fail_policy: str = "stop"
     enable_lipsync: bool = False

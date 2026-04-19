@@ -415,6 +415,7 @@ class AppSettings:
             "vsr_enable": False,
             "vsr_install_path": "",
             "vsr_sub_area": "auto",
+            "vsr_inpaint_mode": "sttn_auto",
             "vsr_timeout_sec": 3600,
             "vsr_fail_policy": "stop",
         }
@@ -723,6 +724,7 @@ class AppParams:
             "remove_hardsub_before_subtitle": False,
             "vsr_install_path": "",
             "vsr_sub_area": "auto",
+            "vsr_inpaint_mode": "sttn_auto",
             "vsr_timeout_sec": 3600,
             "vsr_fail_policy": "stop",
             "enable_lipsync": False,

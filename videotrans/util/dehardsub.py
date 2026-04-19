@@ -42,6 +42,7 @@ def main():
     ap.add_argument('--video', required=True, help='input video path')
     ap.add_argument('--output', required=True, help='output video path')
     ap.add_argument('--area', default='', help='y1,y2,x1,x2 or empty for auto')
+    ap.add_argument('--mode', default='', help='sttn-auto, sttn-det, lama, propainter, opencv')
     args = ap.parse_args()
 
     install = os.path.abspath(args.install)
@@ -67,6 +68,30 @@ def main():
             traceback.print_exc()
             sys.exit(3)
 
+    if args.mode:
+        try:
+            from backend.config import config as vsr_config  # type: ignore
+            from backend.tools.constant import InpaintMode  # type: ignore
+            mode = args.mode.strip().lower().replace('_', '-')
+            mode_map = {
+                'sttn': InpaintMode.STTN_AUTO,
+                'auto': InpaintMode.STTN_AUTO,
+                'sttn-auto': InpaintMode.STTN_AUTO,
+                'sttn-det': InpaintMode.STTN_DET,
+                'det': InpaintMode.STTN_DET,
+                'lama': InpaintMode.LAMA,
+                'propainter': InpaintMode.PROPAINTER,
+                'opencv': InpaintMode.OPENCV,
+            }
+            if mode in mode_map:
+                vsr_config.set(vsr_config.inpaintMode, mode_map[mode])
+                print(f'[runner] inpaint_mode={mode_map[mode].value}', flush=True)
+            else:
+                print(f'[runner] unknown inpaint_mode={args.mode}, use VSR default', flush=True)
+        except Exception:
+            print(f'[runner] failed to set inpaint_mode={args.mode}, use VSR default', flush=True)
+            traceback.print_exc()
+
     sub_area = None
     if args.area:
         try:
@@ -81,11 +106,15 @@ def main():
     print(f'[runner] sub_area={sub_area}', flush=True)
     t0 = time.time()
     try:
-        sr = SubtitleRemover(args.video, sub_area=sub_area, gui_mode=False)
+        sr = SubtitleRemover(args.video, gui_mode=False)
+        if sub_area:
+            sr.sub_areas = [sub_area]
         sr.run()
     except TypeError:
         # 旧版 VSR 签名不同, 退化
         sr = SubtitleRemover(args.video)
+        if sub_area and hasattr(sr, 'sub_areas'):
+            sr.sub_areas = [sub_area]
         sr.run()
     except Exception:
         print('[runner] SubtitleRemover.run() raised', flush=True)
@@ -207,6 +236,43 @@ def _ffmpeg_bin() -> str:
     if local_nix.exists():
         return str(local_nix)
     return 'ffmpeg'
+
+
+def _ffprobe_bin() -> str:
+    local_win = Path(ROOT_DIR) / 'ffmpeg' / 'ffprobe.exe'
+    local_nix = Path(ROOT_DIR) / 'ffmpeg' / 'ffprobe'
+    if local_win.exists():
+        return str(local_win)
+    if local_nix.exists():
+        return str(local_nix)
+    return 'ffprobe'
+
+
+def _has_video_stream(video_path: str, timeout: int = 30) -> bool:
+    cmd = [
+        _ffprobe_bin(),
+        '-v', 'error',
+        '-select_streams', 'v:0',
+        '-show_entries', 'stream=codec_type,width,height,duration',
+        '-of', 'json',
+        str(video_path),
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+        if proc.returncode != 0:
+            logger.warning(f'[dehardsub] ffprobe failed: {proc.stderr or proc.stdout}')
+            return False
+        data = json.loads(proc.stdout or '{}')
+        streams = data.get('streams') or []
+        return any(
+            s.get('codec_type') == 'video'
+            and int(s.get('width') or 0) > 0
+            and int(s.get('height') or 0) > 0
+            for s in streams
+        )
+    except Exception as e:
+        logger.warning(f'[dehardsub] ffprobe exception: {e}')
+        return False
 
 
 def _extract_probe_frames(
@@ -343,10 +409,12 @@ def detect_subtitle_area(
 
     y1 = bot_start + int(best[0])
     y2 = bot_start + int(best[-1]) + 1
-    # padding: 保护描边/上下延伸笔画
-    pad = max(8, int(thickness * 0.35))
-    y1 = max(0, y1 - pad)
-    y2 = min(H, y2 + pad)
+    # padding: old subtitles often have outlines and ascenders above the hottest edge band.
+    # Expand upward more than downward to cover the whole glyph while avoiding the new subtitle area.
+    pad_up = max(18, int(thickness * 0.75))
+    pad_down = max(8, int(thickness * 0.30))
+    y1 = max(0, y1 - pad_up)
+    y2 = min(H, y2 + pad_down)
 
     # 宽度: 满宽 (水平方向投影法对短字幕不可靠, 且 VSR 对 inpaint 宽度不敏感)
     x1, x2 = 0, w
@@ -400,6 +468,7 @@ def remove_hardsub(
     install_path: str,
     cache_folder: str,
     sub_area_cfg: str = '',
+    inpaint_mode: str = '',
     video_info: Optional[dict] = None,
     timeout_sec: int = 3600,
     progress_cb: Optional[Callable[[str], None]] = None,
@@ -435,8 +504,10 @@ def remove_hardsub(
     ]
     if area:
         cmd += ['--area', area]
+    if inpaint_mode:
+        cmd += ['--mode', inpaint_mode]
 
-    logger.info(f'[dehardsub] 启动 VSR: area={area} ({area_src}) cmd={cmd}')
+    logger.info(f'[dehardsub] 启动 VSR: area={area} ({area_src}) mode={inpaint_mode or "default"} cmd={cmd}')
     if progress_cb:
         try:
             progress_cb(f'字幕区域: {area or "全帧"} ({area_src})')
@@ -500,4 +571,6 @@ def remove_hardsub(
     if not Path(output_path).exists():
         return False, f'VSR 成功退出但未生成输出文件: {output_path}'
     logger.info(f'[dehardsub] 完成, 耗时 {dur:.1f}s -> {output_path}')
+    if Path(output_path).stat().st_size <= 1024 or not _has_video_stream(output_path):
+        return False, f'VSR generated an invalid video output: {output_path}; last line: {last_line}'
     return True, f'ok in {dur:.1f}s'
