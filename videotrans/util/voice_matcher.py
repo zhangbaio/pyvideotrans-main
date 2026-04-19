@@ -256,33 +256,44 @@ def _try_gender_match(
         elif not has_f and has_m:
             flip_target = 'f'
         if flip_target:
-            # 按 F0 中位数选 victim
+            # Only flip when F0 is clearly in the target gender range. Older female
+            # and low-pitch female voices often sit around 160-180Hz.
             ranked = [(spk_f0.get(sid), sid) for sid in pending]
             with_f0 = [(v, sid) for v, sid in ranked if isinstance(v, (int, float))]
             victim = None
             if with_f0:
                 if flip_target == 'm':
-                    # 最低 F0 最可能是男声
                     with_f0.sort(key=lambda x: x[0])
-                    victim = with_f0[0][1]
+                    if with_f0[0][0] <= 145:
+                        victim = with_f0[0][1]
                 else:
                     with_f0.sort(key=lambda x: x[0], reverse=True)
-                    victim = with_f0[0][1]
+                    if with_f0[0][0] >= 210:
+                        victim = with_f0[0][1]
             if victim is None:
-                any_spks = [sid for sid, g in zip(pending, detected) if g == 'any']
-                victim = any_spks[-1] if any_spks else pending[-1]
-            flip_line = (
-                f'[voice_matcher] 待分配 spk 性别分布 {dict(zip(pending, detected))} 缺 {flip_target}; '
-                f'按 F0 选 victim={victim} (f0={spk_f0.get(victim)}); 强制切换到 {flip_target} 池'
-            )
-            logger.warning(flip_line)
-            details['_audit']['flip'] = {
-                'detected': dict(zip(pending, detected)),
-                'missing': flip_target,
-                'victim': victim,
-                'victim_f0': spk_f0.get(victim),
-            }
-            spk_gender[victim] = flip_target
+                details['_audit']['flip_skipped'] = {
+                    'detected': dict(zip(pending, detected)),
+                    'missing': flip_target,
+                    'reason': 'f0_not_confident',
+                    'f0': {sid: spk_f0.get(sid) for sid in pending},
+                }
+                logger.info(
+                    f'[voice_matcher] skip gender flip missing={flip_target}; '
+                    f'F0 not confident: {details["_audit"]["flip_skipped"]["f0"]}'
+                )
+            else:
+                flip_line = (
+                    f'[voice_matcher] 待分配 spk 性别分布 {dict(zip(pending, detected))} 缺 {flip_target}; '
+                    f'按 F0 选 victim={victim} (f0={spk_f0.get(victim)}); 强制切换到 {flip_target} 池'
+                )
+                logger.warning(flip_line)
+                details['_audit']['flip'] = {
+                    'detected': dict(zip(pending, detected)),
+                    'missing': flip_target,
+                    'victim': victim,
+                    'victim_f0': spk_f0.get(victim),
+                }
+                spk_gender[victim] = flip_target
 
     f_cursor = 0
     m_cursor = 0

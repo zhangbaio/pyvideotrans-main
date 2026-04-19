@@ -2416,7 +2416,11 @@ class TransCreate(BaseTask):
                     f"emotion={local_ref.get('emotion', 'neutral')}"
                 )
             # 克隆类型 TTS: 设置 ref_wav
-            if voice in ('clone', 'auto-match') and self.cfg.tts_type in SUPPORT_CLONE:
+            if (
+                    voice in ('clone', 'auto-match')
+                    and self.cfg.tts_type in SUPPORT_CLONE
+                    and not (self.cfg.tts_type == QWEN3LOCAL_TTS and self.cfg.voice_role == 'auto-match' and spk_voice_map)
+            ):
                 # Step 5 优先: 按 speaker 复用 extract_speaker_refs 提前提取好的参考音频
                 ref = None
                 if spk_ref_map and spk_list and i < len(spk_list):
