@@ -109,6 +109,37 @@ def qwen3tts_fun(
     # key = (ref_wav_path, ref_text or '', x_vector_only_mode)
     _prompt_cache = {}
 
+    # P1 A.2: 一次性探测 generate_voice_clone 是否接受 instruct kwarg
+    # None=未探测, True=支持, False=不支持 (后续静默跳过, 不再重试)
+    _clone_instruct_supported = {'v': None}
+
+    def _call_voice_clone(batch_texts, prompts, instruct_str):
+        """调用 generate_voice_clone, 动态检测是否支持 instruct 参数。
+        不支持时自动回退无 instruct 模式。"""
+        text_arg = batch_texts if len(batch_texts) > 1 else batch_texts[0]
+        if instruct_str and _clone_instruct_supported['v'] is not False:
+            try:
+                wavs, sr = BASE_OBJ.generate_voice_clone(
+                    text=text_arg,
+                    language=language,
+                    voice_clone_prompt=prompts,
+                    instruct=instruct_str,
+                )
+                if _clone_instruct_supported['v'] is None:
+                    _clone_instruct_supported['v'] = True
+                    logger.info('[qwen3tts] generate_voice_clone 支持 instruct 参数, 启用情感透传')
+                return wavs, sr
+            except TypeError as e:
+                if 'instruct' in str(e):
+                    _clone_instruct_supported['v'] = False
+                    logger.info('[qwen3tts] generate_voice_clone 不支持 instruct, clone 路径不透传情感')
+                else:
+                    raise
+        # 默认 / 已知不支持 / 无 instruct
+        return BASE_OBJ.generate_voice_clone(
+            text=text_arg, language=language, voice_clone_prompt=prompts,
+        )
+
     def _get_prompt_item(ref_wav, ref_text):
         use_xvec = not bool(ref_text)
         cache_key = (ref_wav, ref_text or '', use_xvec)
@@ -279,20 +310,22 @@ def qwen3tts_fun(
             return False
 
     def _resolve_clone_item(it):
-        """返回 (kind, wavfile, ref_text, filename, text) 或 None(跳过)。
+        """返回 (kind, wavfile, ref_text, filename, text, instruct) 或 skip。
         kind: 'skip' | 'custom' | 'clone'
+        instruct: P1 A.2 情感指令 (空串表示无)
         """
         text = it.get('text')
         if not text:
-            return ('skip', None, None, None, None)
+            return ('skip', None, None, None, None, '')
         filename = it.get('filename', '') + "-qwen3tts.wav"
         if tools.vail_file(filename):
-            return ('skip', None, None, None, None)
+            return ('skip', None, None, None, None, '')
         role = it.get('role')
+        instruct = (it.get('instruct') or '').strip()
         if role in CUSTOM_VOICE and CUSTOM_OBJ:
-            return ('custom', role, None, filename, text)
+            return ('custom', role, None, filename, text, instruct)
         if not BASE_OBJ:
-            return ('skip', None, None, None, None)
+            return ('skip', None, None, None, None, '')
         if role == 'clone':
             wavfile = it.get('ref_wav', '')
             ref_text = it.get('ref_text', '')
@@ -302,7 +335,7 @@ def qwen3tts_fun(
         if not wavfile or not Path(wavfile).is_file():
             msg = f"不存在参考音频,无法克隆:{role=},{wavfile=}"
             _write_log(logs_file, json.dumps({"type": "logs", "text": msg}))
-            return ('skip', None, None, None, None)
+            return ('skip', None, None, None, None, '')
         # --- 极短参考保护 (仅对 clone 路径, custom 用不到 ref_wav) ---
         if role == 'clone':
             ref_dur = _wav_seconds(wavfile)
@@ -318,12 +351,12 @@ def qwen3tts_fun(
                        f"已填静音跳过: {Path(wavfile).name}")
                 _write_log(logs_file, json.dumps({"type": "logs", "text": msg}))
                 logger.warning(f'[qwen3tts] {msg}')
-                return ('skip', None, None, None, None)
+                return ('skip', None, None, None, None, '')
             if 0 < ref_dur < MIN_REF_SEC_FOR_REF_TEXT and ref_text:
                 # 短 ref 用 ref_text 会被 speaker prompt 带偏语言, 强制 x_vector 模式
                 logger.debug(f'[qwen3tts] ref 过短 {ref_dur:.2f}s, 忽略 ref_text 走 x_vector_only_mode')
                 ref_text = ''
-        return ('clone', wavfile, ref_text or '', filename, text)
+        return ('clone', wavfile, ref_text or '', filename, text, instruct)
 
     try:
         _len = len(queue_tts)
@@ -339,11 +372,15 @@ def qwen3tts_fun(
                 continue
 
             if kind == 'custom':
-                _, speaker, _, filename, text = resolved
-                _write_log(logs_file, json.dumps({"type": "logs", "text": f'{i+1}/{_len} {role}'}))
+                _, speaker, _, filename, text, _line_instruct = resolved
+                # P1 A.2: 每行情感 instruct 优先于全局 prompt
+                _effective_instruct = _line_instruct if _line_instruct else prompt
+                _emotion_tag = it.get('emotion', '')
+                _log_suffix = f" emotion={_emotion_tag}" if _emotion_tag and _emotion_tag != 'neutral' else ''
+                _write_log(logs_file, json.dumps({"type": "logs", "text": f'{i+1}/{_len} {role}{_log_suffix}'}))
                 synth_started = time.perf_counter()
                 wavs, sr = CUSTOM_OBJ.generate_custom_voice(
-                    text=text, language=language, speaker=speaker, instruct=prompt,
+                    text=text, language=language, speaker=speaker, instruct=_effective_instruct,
                 )
                 stats["custom_items"] += 1
                 stats["custom_synth_sec"] += time.perf_counter() - synth_started
@@ -353,15 +390,16 @@ def qwen3tts_fun(
                 i += 1
                 continue
 
-            # kind == 'clone': 向后扫描, 收集连续同 (wavfile, ref_text) 的条目, 组 batch
-            _, wavfile, ref_text, filename, text = resolved
+            # kind == 'clone': 向后扫描, 收集连续同 (wavfile, ref_text, instruct) 的条目, 组 batch
+            # P1 A.2: instruct 不同时分 batch, 避免把一句的情感套在另一句上
+            _, wavfile, ref_text, filename, text, batch_instruct = resolved
             batch_filenames = [filename]
             batch_texts = [text]
             batch_src_idx = [i]
             j = i + 1
             while j < _len and len(batch_texts) < MAX_BATCH:
                 r = _resolve_clone_item(queue_tts[j])
-                if r[0] != 'clone' or r[1] != wavfile or r[2] != ref_text:
+                if r[0] != 'clone' or r[1] != wavfile or r[2] != ref_text or r[5] != batch_instruct:
                     break
                 batch_filenames.append(r[3])
                 batch_texts.append(r[4])
@@ -371,16 +409,17 @@ def qwen3tts_fun(
             prompt_item = _get_prompt_item(wavfile, ref_text)
             tag = f'{batch_src_idx[0]+1}-{batch_src_idx[-1]+1}/{_len}' if len(batch_texts) > 1 \
                 else f'{batch_src_idx[0]+1}/{_len}'
+            _emotion_log = f" instruct={batch_instruct[:16]}..." if batch_instruct else ''
             _write_log(logs_file, json.dumps({
                 "type": "logs",
-                "text": f'{tag} {role} batch={len(batch_texts)} ref={Path(wavfile).name} rate={queue_tts[batch_src_idx[0]].get("rate", "+0%")}'
+                "text": f'{tag} {role} batch={len(batch_texts)} ref={Path(wavfile).name} rate={queue_tts[batch_src_idx[0]].get("rate", "+0%")}{_emotion_log}'
             }))
 
             synth_started = time.perf_counter()
-            wavs, sr = BASE_OBJ.generate_voice_clone(
-                text=batch_texts if len(batch_texts) > 1 else batch_texts[0],
-                language=language,
-                voice_clone_prompt=[prompt_item] * len(batch_texts),
+            wavs, sr = _call_voice_clone(
+                batch_texts,
+                [prompt_item] * len(batch_texts),
+                batch_instruct,
             )
             stats["clone_batches"] += 1
             stats["clone_items"] += len(batch_texts)

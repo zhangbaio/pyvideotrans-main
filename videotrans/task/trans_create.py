@@ -1007,6 +1007,13 @@ class TransCreate(BaseTask):
             from videotrans.util.prosody_analyzer import analyze_reference_prosody
         except Exception:
             analyze_reference_prosody = None
+        # P1 A.2: 情感检测, 失败不阻断
+        try:
+            from videotrans.util.emotion_detector import detect_emotion
+        except Exception:
+            detect_emotion = None
+        from videotrans.configure.config import settings as _settings_ed
+        _emotion_enabled = bool(_settings_ed.get('tts_emotion_instruct', True))
         for spk_id, segs in spk_segs.items():
             out_path = f"{self.cfg.cache_folder}/{spk_id}_ref.wav"
 
@@ -1116,6 +1123,22 @@ class TransCreate(BaseTask):
                     if not Path(local_path).exists():
                         tools.cut_from_audio(audio_file=source_audio, ss=local_ss, to=local_to, out_file=local_path)
                     prosody = analyze_reference_prosody(local_path, local_text, cur_seg['end_time'] - cur_seg['start_time']) if analyze_reference_prosody else {}
+                    # P1 A.2: 检测情感, 生成 Qwen3-TTS instruct. 失败一律 neutral/''
+                    emotion_label = 'neutral'
+                    emotion_instruct = ''
+                    if _emotion_enabled and detect_emotion is not None:
+                        try:
+                            _cur_text = (cur_seg.get('text') or '').strip()
+                            _cur_dur = (cur_seg.get('end_time') or 0) - (cur_seg.get('start_time') or 0)
+                            emotion_label, emotion_instruct = detect_emotion(
+                                wav_path=local_path,
+                                text=_cur_text,
+                                subtitle_duration_ms=_cur_dur,
+                            )
+                            if emotion_label != 'neutral':
+                                logger.info(f'[emotion] line={cur_seg.get("line")} {spk_id} -> {emotion_label}')
+                        except Exception as _e:
+                            logger.debug(f'[emotion] 检测失败 line={cur_seg.get("line")}: {_e}')
                     line_ref_info[str(cur_seg['line'])] = {
                         'speaker': spk_id,
                         'wav': local_path,
@@ -1123,6 +1146,8 @@ class TransCreate(BaseTask):
                         'start_ms': local_start,
                         'end_ms': local_end,
                         'prosody': prosody,
+                        'emotion': emotion_label,
+                        'instruct': emotion_instruct,
                     }
                 except Exception as e:
                     logger.warning(f'提取局部参考音频失败 line={cur_seg.get("line")} {spk_id}: {e}')
@@ -1976,10 +2001,16 @@ class TransCreate(BaseTask):
                 if isinstance(suggested_rate, int) and suggested_rate:
                     tmp_dict['rate'] = f"+{suggested_rate}%" if suggested_rate >= 0 else f"{suggested_rate}%"
                     logger.debug(f"[Prosody] Line={line_key} suggested_rate={tmp_dict['rate']} style={tmp_dict['prosody'].get('style_tags')}")
+                # P1 A.2: 透传情感 instruct 给 TTS (目前仅 Qwen3 custom voice 会吃)
+                _emotion_instruct = local_ref.get('instruct') or ''
+                if _emotion_instruct:
+                    tmp_dict['instruct'] = _emotion_instruct
+                    tmp_dict['emotion'] = local_ref.get('emotion', 'neutral')
                 logger.debug(
                     f"[LocalRef] Line={line_key} speaker={local_ref.get('speaker')} "
                     f"ref={Path(local_ref.get('wav', '')).name if local_ref.get('wav') else ''} "
-                    f"window={local_ref.get('start_ms')}->{local_ref.get('end_ms')}"
+                    f"window={local_ref.get('start_ms')}->{local_ref.get('end_ms')} "
+                    f"emotion={local_ref.get('emotion', 'neutral')}"
                 )
             # 克隆类型 TTS: 设置 ref_wav
             if voice in ('clone', 'auto-match') and self.cfg.tts_type in SUPPORT_CLONE:
