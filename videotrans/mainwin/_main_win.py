@@ -514,6 +514,12 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         run_in_threadpool(tools.check_hw_on_start)
         self._bind_signal()
 
+    def _whisper_model_list(self):
+        models = [str(it).strip() for it in getattr(settings, 'WHISPER_MODEL_LIST', []) if str(it).strip()]
+        if not models:
+            models = [it.strip() for it in contants.Whisper_Models.replace('，', ',').split(',') if it.strip()]
+        return models
+
     def _bind_signal(self):
         from videotrans.util import tools
         from videotrans.task.check_update import CheckUpdateWorker
@@ -548,8 +554,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             self.model_name.addItems(contants.Openai_Whisper_Models)
             curr = contants.Openai_Whisper_Models
         else:
-            self.model_name.addItems(settings.WHISPER_MODEL_LIST)
-            curr = settings.WHISPER_MODEL_LIST
+            curr = self._whisper_model_list()
+            self.model_name.addItems(curr)
         if params.get('model_name', '') in curr:
             self.model_name.setCurrentText(params.get('model_name', ''))
         if recogn_type not in [recognition.FASTER_WHISPER, recognition.Faster_Whisper_XXL, recognition.Whisper_CPP,

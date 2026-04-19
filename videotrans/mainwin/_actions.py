@@ -20,6 +20,12 @@ from videotrans.util import tools, contants
 @dataclass
 class WinAction(WinActionSub):
 
+    def _whisper_model_list(self):
+        models = [str(it).strip() for it in getattr(settings, 'WHISPER_MODEL_LIST', []) if str(it).strip()]
+        if not models:
+            models = [it.strip() for it in re.split(r'[,，]', contants.Whisper_Models) if it.strip()]
+        return models
+
     def _reset(self):
         # 存放需要处理的视频dict信息，包括uuid
         self.obj_list = []
@@ -123,7 +129,7 @@ class WinAction(WinActionSub):
             self.main.model_name.setDisabled(False)
             self.main.model_name.clear()
             if recogn_type in [recognition.FASTER_WHISPER, recognition.OPENAI_WHISPER, recognition.Faster_Whisper_XXL,recognition.WHISPERX_API]:
-                self.main.model_name.addItems(settings.WHISPER_MODEL_LIST if recogn_type != recognition.OPENAI_WHISPER else contants.Openai_Whisper_Models)
+                self.main.model_name.addItems(self._whisper_model_list() if recogn_type != recognition.OPENAI_WHISPER else contants.Openai_Whisper_Models)
             elif recogn_type == recognition.Deepgram:
                 self.main.model_name.addItems(contants.DEEPGRAM_MODEL)
             elif recogn_type == recognition.Whisper_CPP:
@@ -1067,7 +1073,7 @@ class WinAction(WinActionSub):
             if self.main.recogn_type.currentIndex() in [recognition.FASTER_WHISPER, recognition.Faster_Whisper_XXL,recognition.Whisper_CPP]:
                 current_model_name = self.main.model_name.currentText()
                 self.main.model_name.clear()
-                self.main.model_name.addItems(settings.Whisper_CPP_MODEL_LIST if self.main.recogn_type.currentIndex()==recognition.Whisper_CPP else settings.WHISPER_MODEL_LIST)
+                self.main.model_name.addItems(settings.Whisper_CPP_MODEL_LIST if self.main.recogn_type.currentIndex()==recognition.Whisper_CPP else self._whisper_model_list())
                 self.main.model_name.setCurrentText(current_model_name)
 
 

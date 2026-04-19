@@ -267,13 +267,22 @@ class AppSettings:
 
         # 更新到 self
         default.update(merged_settings) # 这里 default 是 python 属性字典
-        
-        self.WHISPER_MODEL_LIST = re.split(r'[,，]', default.get('model_list', ''))
-        self.ChatTTS_voicelist = re.split(r'[,，]', str(default.get('chattts_voice', '')))
-        self.Whisper_CPP_MODEL_LIST = str(default.get('Whisper_cpp_models', 'ggml-tiny')).strip().split(',')
-        self.Whisper_NET_MODEL_LIST = str(default.get('Whisper_net_models', 'ggml-tiny.bin')).strip().split(',')
-        
         self._apply_dict(default)
+
+        def _split_models(value, fallback):
+            if isinstance(value, list):
+                items = [str(it).strip() for it in value if str(it).strip()]
+            else:
+                items = [it.strip() for it in re.split(r'[,，]', str(value or '')) if it.strip()]
+            if not items or items == ['[]']:
+                items = [it.strip() for it in re.split(r'[,，]', str(fallback or '')) if it.strip()]
+            return items
+
+        # 这些 *_LIST 是运行时派生列表，旧 cfg.json 里可能遗留空数组；必须以字符串配置为准并兜底。
+        self.WHISPER_MODEL_LIST = _split_models(getattr(self, 'model_list', ''), Whisper_Models)
+        self.ChatTTS_voicelist = _split_models(getattr(self, 'chattts_voice', ''), ChatTTS_VOICE)
+        self.Whisper_CPP_MODEL_LIST = _split_models(getattr(self, 'Whisper_cpp_models', ''), Whisper_cpp_models)
+        self.Whisper_NET_MODEL_LIST = _split_models(getattr(self, 'Whisper_net_models', ''), Whisper_cpp_models)
 
         # 保存并处理 hf_token
         self._save_to_disk()
