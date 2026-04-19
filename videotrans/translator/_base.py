@@ -84,7 +84,11 @@ class BaseTrans(BaseCon):
 
         # 如果是不是以 完整字幕格式发送，则组成字符串列表，否则组成 [dict,dict] 列表，每个dict都是字幕行信息
         # P0 长度预算: 为每条字幕计算 [≤N] 字符预算, 让 LLM 从源头控制译文长度
-        self._length_budget_enabled = bool(settings.get('translation_length_constraint', True))
+        # 仅对 LLM 渠道生效; 传统翻译 (google/baidu/deepl 等) 不认这个标记, 不能注入, 否则污染译文
+        _is_ai_channel = self.translate_type in translator.AI_TRANS_CHANNELS
+        self._length_budget_enabled = (
+            bool(settings.get('translation_length_constraint', True)) and _is_ai_channel
+        )
         self._line_budgets = []
         if self._length_budget_enabled:
             for t in self.text_list:
