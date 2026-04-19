@@ -10,11 +10,14 @@ from videotrans.configure.config import ROOT_DIR,tr,app_cfg,settings,params,TEMP
 from videotrans.recognition._base import BaseRecogn
 from videotrans.util import tools
 
+RESOURCE_ID = "volc.bigasr.auc_turbo"
+
 _error={
 "20000003":"静音音频",
 
 
 
+"45000010":"鉴权失败：无效的 X-Api-Key。新版控制台请在第一框填写 APP Key，并清空第二框；旧版控制台请填写 APP ID 和 Access Token。",
 "45000001":"请求参数缺失必需字段 / 字段值无效",
 "45000002":"空音频",
 "45000151":"音频格式不正确",
@@ -29,19 +32,60 @@ class ZijieRecogn(BaseRecogn):
     def __post_init__(self):
         super().__post_init__()
 
+    def _build_headers(self, *, task_id, appid, token):
+        headers = {
+            "X-Api-Resource-Id": RESOURCE_ID,
+            "X-Api-Request-Id": task_id,
+            "X-Api-Sequence": "-1",
+        }
+        if token:
+            headers["X-Api-App-Key"] = appid
+            headers["X-Api-Access-Key"] = token
+        else:
+            headers["X-Api-Key"] = appid
+        return headers
+
+    def _raise_api_error(self, response):
+        code = response.headers.get("X-Api-Status-Code", "")
+        message = response.headers.get("X-Api-Message", "")
+        logid = response.headers.get("X-Tt-Logid", "")
+        details = []
+        if code:
+            details.append(f"code={code}")
+        if message:
+            details.append(f"message={message}")
+        if logid:
+            details.append(f"logid={logid}")
+        if response.status_code:
+            details.append(f"http={response.status_code}")
+
+        err = _error.get(str(code), "")
+        if response.status_code == 403:
+            err = err or "VolcEngine STT authorization failed. Please check API Key/AppID, Access Token, and resource permission."
+        if not err:
+            err = "VolcEngine STT request failed"
+        if details:
+            err = f"{err} ({', '.join(details)})"
+        try:
+            body = response.text
+            if body:
+                err += f"\n{body[:500]}"
+        except Exception:
+            pass
+        raise RuntimeError(err)
+
     def _exec(self) -> Union[List[Dict], None]:
         if self._exit():  return
 
         submit_url = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash"
         task_id = str(uuid.uuid4())
-        appid=params.get('zijierecognmodel_appid','')
-        headers = {
-            "X-Api-App-Key": appid,
-            "X-Api-Access-Key": params.get('zijierecognmodel_token',''),
-            "X-Api-Resource-Id": "volc.bigasr.auc_turbo",
-            "X-Api-Request-Id": task_id,
-            "X-Api-Sequence": "-1"
-        }
+        appid = params.get('zijierecognmodel_appid', '').strip()
+        token = params.get('zijierecognmodel_token', '').strip()
+        if not appid and token:
+            appid, token = token, ''
+        if appid.isdigit() and not token:
+            raise RuntimeError("检测到旧版数字 APP ID，请同时填写旧版控制台里的 Access Token，不要填写 Secret Key。")
+        headers = self._build_headers(task_id=task_id, appid=appid, token=token)
         request = {
             "user": {
                 "uid": appid
@@ -64,12 +108,11 @@ class ZijieRecogn(BaseRecogn):
         response = requests.post(submit_url, json=request, headers=headers)
         logger.info(f'{response=}')
         logger.info(f'{response.headers=}')
-        response.raise_for_status()
         code = response.headers.get('X-Api-Status-Code')
-        if not code:
-            raise RuntimeError(f"未知错误:{response=},{response.headers=}")
+        if response.status_code >= 400 or not code:
+            self._raise_api_error(response)
         if str(code) != "20000000":
-            raise RuntimeError(_error.get(str(code),'未知错误'))
+            self._raise_api_error(response)
 
         res = response.json()
         seg_list = res.get('result', {}).get('utterances')
