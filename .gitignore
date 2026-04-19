@@ -83,6 +83,9 @@ ytdarwin
 __pycache__
 pretrained_models
 runtime
+tools/video-subtitle-remover/
+tools/video-subtitle-remover-env/
+tools/video-subtitle-remover-src/
 
 # Arquivos do sistema
 .DS_Store

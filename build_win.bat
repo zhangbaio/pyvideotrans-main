@@ -11,19 +11,19 @@ REM ============================================================
 setlocal
 cd /d "%~dp0"
 
-echo [1/5] 同步依赖 (uv sync)...
+echo [1/6] 同步依赖 (uv sync)...
 uv sync
 if errorlevel 1 goto :err
 
-echo [2/5] 清理旧产物...
+echo [2/6] 清理旧产物...
 if exist build rmdir /s /q build
 if exist dist  rmdir /s /q dist
 
-echo [3/5] PyInstaller 打包...
+echo [3/6] PyInstaller 打包...
 uv run pyinstaller pyvideotrans.spec --clean --noconfirm --contents-directory=.
 if errorlevel 1 goto :err
 
-echo [4/5] 创建空运行时目录 + 模型下载说明...
+echo [4/6] 创建空运行时目录 + 模型下载说明...
 set OUT=dist\pyVideoTrans
 mkdir "%OUT%\models"       2>nul
 mkdir "%OUT%\output"       2>nul
@@ -32,13 +32,37 @@ mkdir "%OUT%\tmp"          2>nul
 mkdir "%OUT%\presets_user" 2>nul
 copy /y "models\下载说明.txt" "%OUT%\models\下载说明.txt" >nul 2>&1
 
-echo [5/5] 完成!
+echo [5/6] Copy bundled Video Subtitle Remover runtime...
+mkdir "%OUT%\tools" 2>nul
+if not exist "tools\remove_subtitles_cli.py" (
+    echo [ERROR] Missing tools\remove_subtitles_cli.py
+    goto :err
+)
+copy /y "tools\remove_subtitles_cli.py" "%OUT%\tools\remove_subtitles_cli.py" >nul
+if errorlevel 1 goto :err
+call :copy_required_dir "tools\video-subtitle-remover-src" "%OUT%\tools\video-subtitle-remover-src"
+if errorlevel 1 goto :err
+call :copy_required_dir "tools\video-subtitle-remover-env" "%OUT%\tools\video-subtitle-remover-env"
+if errorlevel 1 goto :err
+
+echo [6/6] 完成!
 echo.
 echo 产物目录: %CD%\%OUT%
 echo 入口: %CD%\%OUT%\pyVideoTrans.exe
 echo.
 echo 首次运行前, 用户需按 models\下载说明.txt 下载模型到 models\ 目录
 pause
+exit /b 0
+
+:copy_required_dir
+set SRC=%~1
+set DST=%~2
+if not exist "%SRC%" (
+    echo [ERROR] Missing required directory: %SRC%
+    exit /b 1
+)
+robocopy "%SRC%" "%DST%" /E /XD .git __pycache__ /XF *.pyc >nul
+if %ERRORLEVEL% GEQ 8 exit /b %ERRORLEVEL%
 exit /b 0
 
 :err

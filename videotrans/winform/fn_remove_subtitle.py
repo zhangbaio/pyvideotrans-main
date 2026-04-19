@@ -1,5 +1,6 @@
 def openwin():
     import json
+    import os
     import subprocess
     from pathlib import Path
 
@@ -34,13 +35,26 @@ def openwin():
 
         def _installed_app(self):
             candidates = [
-                Path("D:/Program Files (x86)/Program Files/视频字幕去除器/VideoSubtitleRemover.exe"),
+                Path(r"D:/Program Files (x86)/Program Files/视频字幕去除器/VideoSubtitleRemover.exe"),
+                Path(r"D:/Program Files (x86)/Program Files/Video Subtitle Remover/VideoSubtitleRemover.exe"),
                 Path(ROOT_DIR) / "tools" / "video-subtitle-remover" / "VideoSubtitleRemover.exe",
             ]
             for candidate in candidates:
                 if candidate.exists():
                     return candidate
             return None
+
+        def _subprocess_env(self, python_bin):
+            env = os.environ.copy()
+            runtime_dir = python_bin.parent.parent if python_bin.parent.name.lower() == "scripts" else python_bin.parent
+            path_parts = [
+                str(python_bin.parent),
+                str(runtime_dir),
+                str(runtime_dir / "Library" / "bin"),
+                str(runtime_dir / "DLLs"),
+            ]
+            env["PATH"] = os.pathsep.join(path_parts + [env.get("PATH", "")])
+            return env
 
         def run(self):
             python_bin = self._python_bin()
@@ -52,7 +66,7 @@ def openwin():
                         self.post(
                             "manual",
                             f"已打开本地安装版：{installed_app}\n"
-                            "该安装版未检测到可用命令行参数，请在软件内手动选择视频处理。"
+                            "当前未检测到该安装版可用的命令行参数，请在软件内手动选择视频处理。"
                         )
                         return
                     except Exception as e:
@@ -63,6 +77,7 @@ def openwin():
                     "未找到 video-subtitle-remover-env 的 python.exe，也未找到本地安装版 VideoSubtitleRemover.exe。",
                 )
                 return
+
             cli = Path(ROOT_DIR) / "tools" / "remove_subtitles_cli.py"
             for index, video in enumerate(self.videos, start=1):
                 self.post("logs", f"[{index}/{len(self.videos)}] 开始删除字幕: {Path(video).name}")
@@ -80,6 +95,7 @@ def openwin():
                     proc = subprocess.run(
                         cmd,
                         cwd=ROOT_DIR,
+                        env=self._subprocess_env(python_bin),
                         capture_output=True,
                         text=True,
                         encoding="utf-8",
