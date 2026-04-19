@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from videotrans.configure.config import ROOT_DIR, logger
-from videotrans.util.f0_gender import detect_gender_from_wav
+from videotrans.util.f0_gender import detect_gender_and_f0_from_wav
 from videotrans.util.voice_tagger import tag_voice
 
 _ENGINE_KEY_MAP = {
@@ -220,21 +220,51 @@ def _try_gender_match(
     any_pool = list(pool)
 
     spk_gender: Dict[str, str] = {}
+    spk_f0: Dict[str, Optional[float]] = {}
     for spk_id, wav in speaker_refs.items():
-        spk_gender[spk_id] = detect_gender_from_wav(wav)
-    logger.info(f'[voice_matcher] spk F0 性别判定: {spk_gender} (pool stats={stats})')
+        g, med = detect_gender_and_f0_from_wav(wav)
+        spk_gender[spk_id] = g
+        spk_f0[spk_id] = med
+    logger.info(
+        f'[voice_matcher] spk F0 性别判定: {spk_gender} '
+        f'f0_medians={ {k: round(v,1) if v else None for k,v in spk_f0.items()} } '
+        f'(pool stats={stats})'
+    )
 
-    # 卫生检查: 池内明显男女双全 (各 ≥ 2) 但所有 spk 被判成同一性别 → 很可能 F0 被 BGM 污染
-    # 策略: 把剩余待分配 spk 中最后一个强行换到对立性别池, 避免"三男声全配女声"这种反常识结果
+    # 卫生检查: 池内明显男女双全 (各 ≥ 2) 但待分配 spk 缺失某一性别 → F0 可能被 BGM 污染
+    # victim 选择策略 (按 F0 数值而非标签, 对真实性别更鲁棒):
+    #   - 缺 'm': 选 F0 中位数最低的 spk 翻到 m 池 (最可能是男声)
+    #   - 缺 'f': 选 F0 中位数最高的 spk 翻到 f 池
+    #   - 无可用 F0 数值 → 回退到 any spk / pending 末尾
     pending = [sid for sid in spk_ids if sid not in result]
     if len(pending) >= 2 and stats['f'] >= 2 and stats['m'] >= 2:
-        detected = {spk_gender.get(sid, 'any') for sid in pending}
-        if detected == {'f'} or detected == {'m'}:
-            flip_target = 'm' if detected == {'f'} else 'f'
-            victim = pending[-1]
+        detected = [spk_gender.get(sid, 'any') for sid in pending]
+        has_m = any(g == 'm' for g in detected)
+        has_f = any(g == 'f' for g in detected)
+        flip_target = None
+        if not has_m and (has_f or all(g == 'any' for g in detected)):
+            flip_target = 'm'
+        elif not has_f and has_m:
+            flip_target = 'f'
+        if flip_target:
+            # 按 F0 中位数选 victim
+            ranked = [(spk_f0.get(sid), sid) for sid in pending]
+            with_f0 = [(v, sid) for v, sid in ranked if isinstance(v, (int, float))]
+            victim = None
+            if with_f0:
+                if flip_target == 'm':
+                    # 最低 F0 最可能是男声
+                    with_f0.sort(key=lambda x: x[0])
+                    victim = with_f0[0][1]
+                else:
+                    with_f0.sort(key=lambda x: x[0], reverse=True)
+                    victim = with_f0[0][1]
+            if victim is None:
+                any_spks = [sid for sid, g in zip(pending, detected) if g == 'any']
+                victim = any_spks[-1] if any_spks else pending[-1]
             logger.warning(
-                f'[voice_matcher] 所有待分配 spk 均判为 {detected}, 可能 F0 受 BGM 干扰; '
-                f'强制 {victim} 切换到 {flip_target} 池'
+                f'[voice_matcher] 待分配 spk 性别分布 {dict(zip(pending, detected))} 缺 {flip_target}; '
+                f'按 F0 选 victim={victim} (f0={spk_f0.get(victim)}); 强制切换到 {flip_target} 池'
             )
             spk_gender[victim] = flip_target
 

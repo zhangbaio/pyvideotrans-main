@@ -12,7 +12,7 @@
 """
 from __future__ import annotations
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 from videotrans.configure.config import logger
 
@@ -24,24 +24,32 @@ VOICING_PROB_THRESHOLD = 0.5
 
 
 def detect_gender_from_wav(wav_path: str) -> str:
-    """返回 'f' / 'm' / 'any'. 失败一律 'any', 不阻断上游。"""
+    """向后兼容的薄包装, 只返回性别标签."""
+    gender, _ = detect_gender_and_f0_from_wav(wav_path)
+    return gender
+
+
+def detect_gender_and_f0_from_wav(wav_path: str) -> Tuple[str, Optional[float]]:
+    """返回 (gender, median_f0_hz). gender ∈ {'f','m','any'}; 任何失败 → ('any', None).
+    median_f0 即使 gender='any' 也尽量给出, 方便上层按数值排序选 victim.
+    """
     p = Path(wav_path)
     if not p.exists() or p.stat().st_size < 2048:
-        return 'any'
+        return 'any', None
     try:
         import numpy as np
         import soundfile as sf
         import librosa
     except Exception as e:
         logger.warning(f'[f0_gender] 缺依赖: {e}')
-        return 'any'
+        return 'any', None
 
     try:
         audio, sr = sf.read(str(p), dtype='float32', always_2d=False)
         if audio.ndim > 1:
             audio = audio[:, 0]
         if len(audio) < sr * 0.5:  # 少于 0.5s 不够
-            return 'any'
+            return 'any', None
 
         # librosa.pyin: 带 voiced 概率的概率版 yin. 过滤 BGM/钢琴等非人声帧
         # fmin=60Hz (成年男性下限), fmax=400Hz (女性/儿童上限), frame_length 2048 (~128ms @16k)
@@ -55,7 +63,7 @@ def detect_gender_from_wav(wav_path: str) -> str:
             voiced_probs = None
 
         if f0 is None or len(f0) == 0:
-            return 'any'
+            return 'any', None
 
         f0 = np.asarray(f0, dtype=float)
         if voiced_probs is not None:
@@ -67,7 +75,7 @@ def detect_gender_from_wav(wav_path: str) -> str:
         f0 = f0[(f0 > 70) & (f0 < 400)]  # 裁剪异常
         if len(f0) < MIN_VOICED_FRAMES:
             logger.info(f'[f0_gender] {p.name} voiced 帧不足 ({len(f0)}<{MIN_VOICED_FRAMES}) → any')
-            return 'any'
+            return 'any', None
         median = float(np.median(f0))
         if median >= F0_FEMALE_MIN:
             gender = 'f'
@@ -76,7 +84,7 @@ def detect_gender_from_wav(wav_path: str) -> str:
         else:
             gender = 'any'
         logger.info(f'[f0_gender] {p.name} F0 中位数={median:.1f}Hz voiced_frames={len(f0)} → {gender}')
-        return gender
+        return gender, median
     except Exception as e:
         logger.warning(f'[f0_gender] 估计失败 {wav_path}: {e}')
-        return 'any'
+        return 'any', None
