@@ -1013,6 +1013,13 @@ class TransCreate(BaseTask):
                 from videotrans.process.prepare_audio import cam_speakers as _run_speakers
             elif speaker_type == 'pyannote':
                 from videotrans.process.prepare_audio import pyannote_speakers as _run_speakers
+                # P1 加速: 优先用 UVR 已分离的 vocal.wav + 说话人数上限
+                _vocal = getattr(self.cfg, 'vocal', None)
+                if bool(settings.get('diariz_use_vocal', True)) and _vocal and tools.vail_file(_vocal):
+                    kw["vocal_file"] = _vocal
+                _diariz_max = int(settings.get('diariz_max_speakers', 6) or 6)
+                if _diariz_max > 0:
+                    kw["max_speakers"] = _diariz_max
             elif speaker_type == 'reverb':
                 from videotrans.process.prepare_audio import reverb_speakers as _run_speakers
             else:

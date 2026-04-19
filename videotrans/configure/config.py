@@ -332,7 +332,10 @@ class AppSettings:
             "aitrans_thread": 50,
             "translation_wait": 0,
             "dubbing_wait": 1,
-            "dubbing_thread": 1,
+            "dubbing_thread": 4,
+            # Phase 1 diariz 加速: 优先用 vocal.wav + 说话人数上限
+            "diariz_use_vocal": True,
+            "diariz_max_speakers": 6,
             "normal_text":False,
             "remove_dubb_silence": True,
             "save_segment_audio": False,

@@ -296,7 +296,15 @@ def cam_speakers(*, input_file, subtitles, num_speakers=-1,  is_cuda=False, logs
 
 # 4. 说话人分离，pyannote https://huggingface.co/pyannote/speaker-diarization-3.0
 def pyannote_speakers(*, input_file, subtitles, num_speakers=-1,  is_cuda=False, logs_file=None,
-                      device_index=0):
+                      device_index=0, vocal_file=None, max_speakers=-1):
+    """
+    pyannote 说话人分离.
+
+    新参数 (Phase 1 优化, 均可选, 向后兼容):
+      vocal_file: UVR 分离后的纯人声 wav 路径. 存在时优先用它, 跑得更快更准
+                  (背景音乐不参与聚类)
+      max_speakers: 说话人数量上限. 短剧默认 ≤6, 能显著剪掉 pyannote 的无效假设搜索
+    """
     import torch, pyannote.audio, torchaudio, os, shutil, time
     torch.serialization.add_safe_globals([
         torch.torch_version.TorchVersion,
@@ -307,6 +315,13 @@ def pyannote_speakers(*, input_file, subtitles, num_speakers=-1,  is_cuda=False,
     from pyannote.audio import Pipeline
     from pathlib import Path
 
+    # 优先用 vocal.wav (UVR 已分离人声) 替代原音轨送进 pyannote
+    # 短剧 BGM 重, 原音轨跑 diariz 既慢又容易把 BGM 中的人声采样判成多说话人
+    _diariz_input = input_file
+    if vocal_file and Path(vocal_file).exists() and Path(vocal_file).stat().st_size > 2048:
+        _diariz_input = vocal_file
+        logger.info(f'[diariz] 使用 UVR 分离后的 vocal.wav 送 pyannote: {vocal_file}')
+
     def _get_diariz():
         # pyannote-audio==3.4.0
         pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
@@ -315,10 +330,19 @@ def pyannote_speakers(*, input_file, subtitles, num_speakers=-1,  is_cuda=False,
             pipeline.to(torch.device(f"cuda:{device_index}"))
 
         # apply pretrained pipeline
-        waveform, sample_rate = torchaudio.load(input_file)
+        waveform, sample_rate = torchaudio.load(_diariz_input)
+        pipe_kwargs = {}
         if num_speakers > 0:
-            diarization = pipeline({"waveform": waveform, "sample_rate": sample_rate}, num_speakers=num_speakers)
-        else:
+            pipe_kwargs['num_speakers'] = num_speakers
+        elif max_speakers and max_speakers > 0:
+            # 只给上限, 让 pyannote 自己决定实际个数, 但砍掉 >max 的假设
+            pipe_kwargs['max_speakers'] = int(max_speakers)
+        logger.info(f'[diariz] pipeline kwargs={pipe_kwargs} input={_diariz_input}')
+        try:
+            diarization = pipeline({"waveform": waveform, "sample_rate": sample_rate}, **pipe_kwargs)
+        except TypeError:
+            # 老版本 pyannote 不认 max_speakers, 回退到无约束
+            logger.info('[diariz] 当前 pyannote 不支持 max_speakers, 回退到无约束调用')
             diarization = pipeline({"waveform": waveform, "sample_rate": sample_rate})
 
         output = []
