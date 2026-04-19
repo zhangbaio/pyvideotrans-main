@@ -222,6 +222,21 @@ def _try_gender_match(
     spk_gender: Dict[str, str] = {}
     for spk_id, wav in speaker_refs.items():
         spk_gender[spk_id] = detect_gender_from_wav(wav)
+    logger.info(f'[voice_matcher] spk F0 性别判定: {spk_gender} (pool stats={stats})')
+
+    # 卫生检查: 池内明显男女双全 (各 ≥ 2) 但所有 spk 被判成同一性别 → 很可能 F0 被 BGM 污染
+    # 策略: 把剩余待分配 spk 中最后一个强行换到对立性别池, 避免"三男声全配女声"这种反常识结果
+    pending = [sid for sid in spk_ids if sid not in result]
+    if len(pending) >= 2 and stats['f'] >= 2 and stats['m'] >= 2:
+        detected = {spk_gender.get(sid, 'any') for sid in pending}
+        if detected == {'f'} or detected == {'m'}:
+            flip_target = 'm' if detected == {'f'} else 'f'
+            victim = pending[-1]
+            logger.warning(
+                f'[voice_matcher] 所有待分配 spk 均判为 {detected}, 可能 F0 受 BGM 干扰; '
+                f'强制 {victim} 切换到 {flip_target} 池'
+            )
+            spk_gender[victim] = flip_target
 
     f_cursor = 0
     m_cursor = 0
