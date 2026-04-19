@@ -206,6 +206,16 @@ def get_prompt(ainame,aisendsrt=True):
                 content = content.replace('# ACTUAL TASK', f"{BUDGET_PROMPT_FRAGMENT}\n\n# ACTUAL TASK")
     except Exception:
         pass
+
+    # P0 A.3: 情感/标点保留规则, 让 TTS 有 prosody cue 可用, 减少配音生硬感
+    try:
+        from videotrans.configure.config import settings as _settings
+        if bool(_settings.get('translation_emphasis_preserve', True)):
+            from videotrans.util.length_budget import EMPHASIS_PROMPT_FRAGMENT
+            if 'EMOTION & EMPHASIS PRESERVATION' not in content:
+                content = content.replace('# ACTUAL TASK', f"{EMPHASIS_PROMPT_FRAGMENT}\n\n# ACTUAL TASK")
+    except Exception:
+        pass
     return content
 
 

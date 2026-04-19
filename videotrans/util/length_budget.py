@@ -112,3 +112,16 @@ Rules:
 - Preserving line count / block count is still the top priority. The budget applies **within** each existing line/block — do NOT split or merge to satisfy it.
 - If you truly cannot compress further, get as close as possible; a tiny overshoot is tolerable, but large overshoots are a defect.
 """
+
+# 情感/语气保留规则: 让 TTS 能吃到标点和强调信号, 减少配音生硬感
+EMPHASIS_PROMPT_FRAGMENT = """
+# EMOTION & EMPHASIS PRESERVATION (for TTS Prosody)
+The translation will be fed to a TTS engine that uses punctuation as prosody cues. Preserve the source's emotional intensity:
+- **Exclamation marks (!)**: if the source ends with `!`, your translation MUST end with `!` (never demote to `.`). Multiple `!!` → keep multiple.
+- **Question marks (?)**: preserve as-is, including rhetorical questions.
+- **Ellipsis (...)**: preserve for hesitation/trailing-off; do not replace with period.
+- **Dashes (— or --)**: preserve for interruption/abrupt stops.
+- **ALL-CAPS emphasis**: if the source uses uppercase or quotes for stress ("STOP IT"), mirror the emphasis in the target (use uppercase for Latin scripts, `「」` or quotes for CJK).
+- **Interjections**: keep short emotive words (oh, wow, huh, no, hey, ah, ugh) and their target-language equivalents. These are prosody anchors — never drop them even under tight character budget.
+- **Length constraint applies AFTER emotion preservation**: if the budget forces a cut, cut adjectives/filler words, NEVER cut punctuation or interjections.
+"""

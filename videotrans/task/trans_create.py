@@ -978,9 +978,23 @@ class TransCreate(BaseTask):
             if duration_ms > 0:
                 spk_segs[spk_id].append((seg['start_time'], seg['end_time'], i))
 
+        # P0 A.1: 优先用 UVR 分离后的纯人声 vocal.wav 做 ref, 避免 BGM 混入 TTS 克隆
+        # 带 BGM 的 ref 会让 Qwen3-TTS 学到音乐成分, 生成的配音听起来更"生硬/浑浊"
         source_audio = self.cfg.source_wav
+        try:
+            _vocal_path = getattr(self.cfg, 'vocal', None) or f"{self.cfg.cache_folder}/vocal.wav"
+            from videotrans.configure.config import settings as _settings
+            _use_vocal = bool(_settings.get('ref_audio_use_vocal', True))
+            if _use_vocal and _vocal_path and tools.vail_file(_vocal_path):
+                source_audio = _vocal_path
+                logger.info(f'[extract_speaker_refs] 使用 UVR 分离的 vocal.wav 作为 ref 源: {source_audio}')
+            else:
+                logger.info(f'[extract_speaker_refs] 使用原始 source_wav 作为 ref 源 (vocal 不可用或禁用): {source_audio}')
+        except Exception as e:
+            logger.warning(f'[extract_speaker_refs] 检查 vocal.wav 失败, 回退 source_wav: {e}')
+
         if not tools.vail_file(source_audio):
-            logger.warning('extract_speaker_refs: source_wav 不存在，跳过参考音频提取')
+            logger.warning('extract_speaker_refs: 参考音频源不存在，跳过参考音频提取')
             return
 
         MIN_MS = 3000   # 最短3秒
