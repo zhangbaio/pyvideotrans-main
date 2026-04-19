@@ -1374,7 +1374,21 @@ class TransCreate(BaseTask):
         if not spk_voice_map:
             return None, None
         logger.info(f'Step4 auto-match QwenTTS Speaker→Voice {spk_voice_map}')
-        self._signal(text=f'Speaker → Voice: {spk_voice_map}')
+        # 把每个 spk 的匹配依据 (embedding/gender/round_robin + 分数 + F0 判定性别) 送进任务 log, 便于排错
+        details = matched.get('details', {}) or {}
+        for spk_id, info in details.items():
+            method = info.get('method', '?')
+            voice = info.get('voice', '?')
+            score = info.get('score')
+            gender = info.get('gender')
+            extra = []
+            if score is not None:
+                extra.append(f'score={score}')
+            if gender:
+                extra.append(f'gender={gender}')
+            suffix = f' ({", ".join(extra)})' if extra else ''
+            self._signal(text=f'  {spk_id} -> {voice} [{method}]{suffix}')
+        self._signal(text=f'Speaker -> Voice: {spk_voice_map}')
         return spk_list, spk_voice_map
 
     def _build_speaker_ref_map(self):
