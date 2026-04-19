@@ -429,8 +429,99 @@ class TransCreate(BaseTask):
         self._signal(text='Lip sync finished')
         self._stage_end("lipsync")
 
+    def _maybe_remove_hardsub(self) -> None:
+        """
+        P0: 去除视频硬字幕 (video-subtitle-remover 外部进程).
+
+        启用条件 (全部满足):
+          - settings['vsr_enable'] 为 True
+          - settings['vsr_install_path'] 指向有效 VSR 安装目录
+          - self.cfg.name 是有效视频文件
+          - self.is_audio_trans / app_mode=='tiqu' 时不跑 (没视频可去)
+          - 已经去过一次 (cache 里有 _dehardsub.mp4) 则直接复用
+
+        失败策略: 记日志 + 通知 UI, 不抛异常, 保留原视频继续走主流程.
+        """
+        try:
+            from videotrans.configure.config import settings
+            from videotrans.util import dehardsub as _dehardsub
+        except Exception as e:
+            logger.warning(f'[dehardsub] 模块导入失败, 跳过: {e}')
+            return
+
+        if not settings.get('vsr_enable', False):
+            return
+        if getattr(self, 'is_audio_trans', False) or getattr(self.cfg, 'app_mode', '') == 'tiqu':
+            return
+        install_path = str(settings.get('vsr_install_path', '') or '').strip()
+        if not install_path:
+            logger.info('[dehardsub] vsr_enable=True 但未配置 vsr_install_path, 跳过')
+            self._signal(text='未配置 vsr_install_path, 跳过硬字幕去除')
+            return
+
+        src_video = self.cfg.name
+        if not src_video or not Path(src_video).exists():
+            return
+
+        self._stage_start('dehardsub')
+        # 幂等: 同一源视频二次跑任务时复用缓存产物
+        Path(self.cfg.cache_folder).mkdir(parents=True, exist_ok=True)
+        out_path = str(Path(self.cfg.cache_folder) / '_dehardsub.mp4')
+        if Path(out_path).exists() and Path(out_path).stat().st_size > 1024:
+            logger.info(f'[dehardsub] 复用缓存产物: {out_path}')
+            self._signal(text='复用已去硬字幕的缓存视频')
+            if not getattr(self.cfg, 'name_origin', None):
+                self.cfg.name_origin = src_video
+            self.cfg.name = out_path
+            self._stage_end('dehardsub')
+            return
+
+        self._signal(text=tr('Hold on a monment...'))
+        ok, reason = _dehardsub.is_available(install_path)
+        if not ok:
+            logger.warning(f'[dehardsub] 跳过: {reason}')
+            self._signal(text=f'硬字幕去除跳过: {reason}')
+            self._stage_end('dehardsub')
+            return
+
+        # 拿视频宽高, 支持 'bottom:0.15' 这种相对区域
+        try:
+            video_info = tools.get_video_info(src_video)
+        except Exception:
+            video_info = None
+
+        area_cfg = str(settings.get('vsr_sub_area', '') or '').strip()
+        timeout_sec = int(settings.get('vsr_timeout_sec', 3600) or 3600)
+
+        try:
+            success, msg = _dehardsub.remove_hardsub(
+                video_path=src_video,
+                output_path=out_path,
+                install_path=install_path,
+                cache_folder=self.cfg.cache_folder,
+                sub_area_cfg=area_cfg,
+                video_info=video_info,
+                timeout_sec=timeout_sec,
+                progress_cb=lambda t: self._signal(text=t),
+            )
+        except Exception as e:
+            logger.exception(f'[dehardsub] 调用异常: {e}')
+            success, msg = False, str(e)
+
+        if success:
+            self.cfg.name_origin = src_video
+            self.cfg.name = out_path
+            self._signal(text=f'硬字幕去除完成: {msg}')
+            logger.info(f'[dehardsub] 已替换输入视频 -> {out_path}')
+        else:
+            logger.warning(f'[dehardsub] 失败, 保留原视频: {msg}')
+            self._signal(text=f'硬字幕去除失败, 继续使用原视频: {msg}')
+        self._stage_end('dehardsub')
+
     def prepare(self) -> None:
         if self._exit(): return
+        # P0: 去除视频硬字幕 (可选, 失败静默回退, 不阻断主流程)
+        self._maybe_remove_hardsub()
         self._stage_start("prepare")
         self._signal(text=tr("Hold on a monment..."))
         Path(self.cfg.cache_folder).mkdir(parents=True, exist_ok=True)
