@@ -8,6 +8,7 @@ from videotrans import translator
 from videotrans.configure._base import BaseCon
 from videotrans.configure.config import tr, app_cfg, settings, params, logger, TEMP_DIR, TEMP_ROOT
 from videotrans.util import tools
+from videotrans.util.length_budget import compute_budget_chars, strip_budget_marker
 from tenacity import RetryError
 
 _GLOBAL_CONTEXT="""
@@ -82,12 +83,40 @@ class BaseTrans(BaseCon):
             self._download()
 
         # 如果是不是以 完整字幕格式发送，则组成字符串列表，否则组成 [dict,dict] 列表，每个dict都是字幕行信息
-        if not self.aisendsrt:
-            # 是文字列表  [text_str,...]
-            source_text = [t['text'].replace("\n"," ") for t in self.text_list]
+        # P0 长度预算: 为每条字幕计算 [≤N] 字符预算, 让 LLM 从源头控制译文长度
+        self._length_budget_enabled = bool(settings.get('translation_length_constraint', True))
+        self._line_budgets = []
+        if self._length_budget_enabled:
+            for t in self.text_list:
+                try:
+                    dur_ms = float(t.get('end_time', 0) or 0) - float(t.get('start_time', 0) or 0)
+                except Exception:
+                    dur_ms = 0
+                self._line_budgets.append(compute_budget_chars(dur_ms, self.target_code))
         else:
-            # 是srt格式字幕列表 [{text,line,time},...]
-            source_text=self.text_list
+            self._line_budgets = [0] * len(self.text_list)
+
+        if not self.aisendsrt:
+            # 是文字列表  [text_str,...]; 为每行加上 [≤N] 前缀
+            source_text = []
+            for idx, t in enumerate(self.text_list):
+                body = t['text'].replace("\n", " ")
+                if self._length_budget_enabled and idx < len(self._line_budgets) and self._line_budgets[idx] > 0:
+                    source_text.append(f"[≤{self._line_budgets[idx]}] {body}")
+                else:
+                    source_text.append(body)
+        else:
+            # 是srt格式字幕列表 [{text,line,time},...]; 在每块的 text 前加 [≤N]
+            if self._length_budget_enabled:
+                source_text = []
+                for idx, it in enumerate(self.text_list):
+                    new_it = dict(it)
+                    budget = self._line_budgets[idx] if idx < len(self._line_budgets) else 0
+                    if budget > 0:
+                        new_it['text'] = f"[≤{budget}] {it.get('text', '')}"
+                    source_text.append(new_it)
+            else:
+                source_text = self.text_list
 
 
         split_source_text = [source_text[i:i + self.trans_thread] for i in range(0, len(source_text), self.trans_thread)]
@@ -124,8 +153,10 @@ class BaseTrans(BaseCon):
 
             for x, result_item in enumerate(sep_res):
                 if x < len(it):
-                    target_list.append(result_item.strip())
-                    self._signal(text=result_item + "\n",type='subtitle')
+                    # P0: 剥掉 LLM 偶尔回带的 [≤N] 前缀
+                    cleaned = strip_budget_marker(result_item.strip()) if self._length_budget_enabled else result_item.strip()
+                    target_list.append(cleaned)
+                    self._signal(text=cleaned + "\n",type='subtitle')
             # 行数不匹配填充空行
             if len(sep_res) < len(it):
                 print(f'行数不匹配，原始：{len(it)}, 结果：{len(sep_res)}\n{it=}\n{sep_res=}')
@@ -174,7 +205,11 @@ class BaseTrans(BaseCon):
         for i, it in enumerate(raws_list):
             if i>=len(self.text_list):
                 continue
-            it['text']=it['text'].strip()
+            # P0: SRT 模式下也剥掉可能回带的 [≤N] 前缀
+            text = it['text'].strip()
+            if getattr(self, '_length_budget_enabled', False):
+                text = strip_budget_marker(text)
+            it['text'] = text
         return raws_list
 
     def _set_cache(self, it, res_str):

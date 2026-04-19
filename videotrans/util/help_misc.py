@@ -196,6 +196,16 @@ def get_prompt(ainame,aisendsrt=True):
         glossary = "\n".join(["|" + it.replace("=", '|') + "|" for it in glossary.split('\n')])
         glossary_prompt = """\n\n# Glossary of terms\nTranslations are made strictly according to the following glossary. If a term appears in a sentence, the corresponding translation must be used, not a free translation:\n| Glossary | Translation |\n| --------- | ----- |\n"""
         content = content.replace('# ACTUAL TASK', f"""{glossary_prompt}{glossary}\n\n# ACTUAL TASK""")
+
+    # P0: 字幕长度预算规则. 一处注入, 覆盖所有翻译渠道。默认开启, 可通过 settings 关闭。
+    try:
+        from videotrans.configure.config import settings as _settings
+        if bool(_settings.get('translation_length_constraint', True)):
+            from videotrans.util.length_budget import BUDGET_PROMPT_FRAGMENT
+            if '[≤' not in content:  # 幂等: 已经含预算规则就别重复注入
+                content = content.replace('# ACTUAL TASK', f"{BUDGET_PROMPT_FRAGMENT}\n\n# ACTUAL TASK")
+    except Exception:
+        pass
     return content
 
 
