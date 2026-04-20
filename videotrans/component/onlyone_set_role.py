@@ -69,6 +69,9 @@ class SpeakerAssignmentDialog(QDialog):
         self.managed_role_mode = self.clone_mode or self.auto_match_mode
         self.default_role_text = self.default_role if self.default_role else tr('Default Role')
         self.auto_match_detail = {}
+        self.speaker_checks = {}
+        self.speaker_labels = {}
+        self.display_data = []
 
         # --- 声音克隆库 (voice_library) 集成 ---
         # drama_dir: 默认用视频父目录名；无 video_path 时退化为 None (完全不启用库)
@@ -391,7 +394,7 @@ class SpeakerAssignmentDialog(QDialog):
             # 7. 添加底部按钮
             self._setup_bottom_buttons()
             self._update_role_column()
-            for check, spk_id in self.speaker_checks.items():
+            for check, spk_id in getattr(self, 'speaker_checks', {}).items():
                 label_color = "#66dd99" if spk_id in self.auto_assigned_speakers and self.speakers.get(spk_id) else "#ffcccc"
                 self.speaker_labels[check].setStyleSheet(f"color: {label_color};")
             
@@ -910,6 +913,7 @@ class SpeakerAssignmentDialog(QDialog):
         self.prompt_label.deleteLater()
 
     def save_and_close2(self):
+        app_cfg.task_countdown = 0
         self.accept()
 
     def opendir_sub(self):
@@ -920,6 +924,17 @@ class SpeakerAssignmentDialog(QDialog):
         event.ignore()  # 忽略关闭请求，窗口保持不动
     
     def save_and_close(self):
+        try:
+            self._save_and_close_impl()
+        except Exception as e:
+            logger.exception(f"SpeakerAssignmentDialog save failed: {e}", exc_info=True)
+            try:
+                self.save_button.setDisabled(False)
+            except Exception:
+                pass
+            QMessageBox.critical(self, "Error", f"Save failed: {e}")
+
+    def _save_and_close_impl(self):
         self.save_button.setDisabled(True)
         app_cfg.line_roles = {}
         srt_str_list = []
@@ -1023,4 +1038,5 @@ class SpeakerAssignmentDialog(QDialog):
             except Exception as e:
                 logger.warning(f'[voice_library] 录声纹失败: {e}')
 
+        app_cfg.task_countdown = 0
         self.accept()
