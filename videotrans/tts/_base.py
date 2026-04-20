@@ -72,13 +72,24 @@ class BaseTTS(BaseCon):
 
     def _cleantts(self):
         normalizer = None
-        if settings.get('normal_text'):
-            if self.language[:2] == 'zh':
+        lang_prefix = (self.language or '')[:2]
+        force_english_number_normalizer = (
+            lang_prefix == 'en'
+            and not settings.get('normal_text')
+            and self.__class__.__name__ in {'QwenttsLocal', 'QWENTTS', 'QwenttsCloneTTS'}
+        )
+        if settings.get('normal_text') or force_english_number_normalizer:
+            if lang_prefix == 'zh':
                 from videotrans.util.cn_tn import TextNorm
                 normalizer = TextNorm(to_banjiao=True)
-            elif self.language[:2] == 'en':
+            elif lang_prefix == 'en':
                 from videotrans.util.en_tn import EnglishNormalizer
-                normalizer = EnglishNormalizer()
+                english_normalizer = EnglishNormalizer()
+                normalizer = (
+                    english_normalizer.normalize_numbers
+                    if force_english_number_normalizer
+                    else english_normalizer
+                )
         
         for i, it in enumerate(self.queue_tts):
             if it['text'].strip() and normalizer:
