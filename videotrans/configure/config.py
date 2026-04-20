@@ -327,7 +327,7 @@ class AppSettings:
             "guiji_model": Guiji_Model,
             "zijiehuoshan_model": Zijiehuoshan_Model,
             "model_list": Whisper_Models,
-            "max_audio_speed_rate": 100,
+            "max_audio_speed_rate": 1.25,
             "max_video_pts_rate": 2.5,
             "threshold": 0.35,
             "min_speech_duration_ms": 250,

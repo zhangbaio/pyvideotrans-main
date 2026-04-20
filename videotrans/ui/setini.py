@@ -92,7 +92,7 @@ class Ui_setini(object):
             },
             "justify": {
 
-                "max_audio_speed_rate": "最大音频加速倍数，默认100",
+                "max_audio_speed_rate": "最大音频加速倍数，默认1.25，超过1.8会自动限制以保证自然语速",
                 "max_video_pts_rate": "视频慢放最大倍数，默认2.5，建议不要大于2.5",
                 "cjk_len":"中日韩字幕单行字符数，多于将换行，仅针对视频翻译中的目标字幕或单独的语音转录功能字幕",
                 "other_len":"其他语言字幕单行字符数，多于将换行，仅针对视频翻译中的目标字幕或单独的语音转录功能字幕"
@@ -339,7 +339,7 @@ class Ui_setini(object):
                 },
                 "justify": {
 
-                    "max_audio_speed_rate": "Maximum audio speed-up rate. Default: 100.",
+                    "max_audio_speed_rate": "Maximum audio speed-up rate. Default: 1.25. Values above 1.8 are clamped for natural speech.",
                     "max_video_pts_rate": "Maximum video slow-down rate. Default: 2.5. Recommended not to exceed 2.5.",
                     "cjk_len":"Number of characters per line for Chinese, Japanese, and Korean subtitles; more than this will result in a line break",
                     "other_len":"Number of words per line for subtitles in other languages; more than this will result in a line break"

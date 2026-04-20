@@ -249,6 +249,8 @@ class SpeedRate:
     MIN_CLIP_DURATION_MS = 40
     AUDIO_SAMPLE_RATE = 48000
     AUDIO_CHANNELS = 2
+    DEFAULT_MAX_AUDIO_SPEED_RATE = 1.25
+    MAX_SAFE_AUDIO_SPEED_RATE = 1.8
     MAX_SAFE_VIDEO_PTS_RATE = 2.5
     EXTREME_DUB_RATIO = 3.0
 
@@ -283,7 +285,9 @@ class SpeedRate:
         self.video_info = {}
         self.target_audio = target_audio
 
-        self.max_audio_speed_rate = float(settings.get('max_audio_speed_rate', 100))
+        self.max_audio_speed_rate = self._normalize_audio_speed_rate(
+            settings.get('max_audio_speed_rate', self.DEFAULT_MAX_AUDIO_SPEED_RATE)
+        )
         self.max_video_pts_rate = float(settings.get('max_video_pts_rate', self.MAX_SAFE_VIDEO_PTS_RATE))
         if self.max_video_pts_rate > self.MAX_SAFE_VIDEO_PTS_RATE:
             logger.warning(
@@ -310,6 +314,27 @@ class SpeedRate:
 
         self.audio_speed_rubberband = shutil.which("rubberband")
         logger.debug(f"[SpeedRate] Init. AudioRate={self.shoud_audiorate}, VideoRate={self.shoud_videorate}, Rubberband={bool(self.audio_speed_rubberband)}")
+
+    def _normalize_audio_speed_rate(self, value):
+        try:
+            rate = float(value)
+        except (TypeError, ValueError):
+            rate = self.DEFAULT_MAX_AUDIO_SPEED_RATE
+        if rate >= 10:
+            logger.warning(
+                f"[SpeedRate] max_audio_speed_rate={rate} is too high; "
+                f"using natural limit {self.DEFAULT_MAX_AUDIO_SPEED_RATE}x"
+            )
+            return self.DEFAULT_MAX_AUDIO_SPEED_RATE
+        if rate <= 1.0:
+            return self.DEFAULT_MAX_AUDIO_SPEED_RATE
+        if rate > self.MAX_SAFE_AUDIO_SPEED_RATE:
+            logger.warning(
+                f"[SpeedRate] max_audio_speed_rate={rate} is too high; "
+                f"clamping to safe limit {self.MAX_SAFE_AUDIO_SPEED_RATE}x"
+            )
+            return self.MAX_SAFE_AUDIO_SPEED_RATE
+        return rate
 
     def run(self):
         if not self.shoud_audiorate and not self.shoud_videorate:
@@ -360,7 +385,7 @@ class SpeedRate:
         else:
             # 不变视频，时长为原槽位时长
             for it in self.queue_tts:
-                it['final_duration'] = it['source_duration']
+                it['final_duration'] = it.get('final_duration', it['source_duration'])
             
         # 5. 音频对齐拼接
         tools.set_process(text='Concatenating final audio...', uuid=self.uuid)
@@ -449,9 +474,11 @@ class SpeedRate:
                 if dubb_dur > source_dur:
                     ratio = dubb_dur / source_dur
                     if ratio > self.max_audio_speed_rate:
-                        audio_target = int(dubb_dur / self.max_audio_speed_rate)
+                        audio_target = max(source_dur, int(dubb_dur / self.max_audio_speed_rate))
+                        mode_log = "Only Audio/NaturalLimit"
                     else:
                         audio_target = source_dur
+                it['final_duration'] = max(source_dur, audio_target)
 
             elif not self.shoud_audiorate and self.shoud_videorate:
                 mode_log = "Only Video"
@@ -497,6 +524,15 @@ class SpeedRate:
                         audio_target = joint_target
                         video_target = joint_target
                         mode_log = "Both/ProsodyLimited"
+                    min_audio_target = int(dubb_dur / self.max_audio_speed_rate)
+                    if audio_target < min_audio_target:
+                        audio_target = min_audio_target
+                        if min_audio_target <= max_video_target:
+                            video_target = min_audio_target
+                            mode_log += "+AudioNaturalLimit"
+                        else:
+                            video_target = max_video_target
+                            mode_log += "+AudioLimitOverflow"
             
 
 
@@ -779,7 +815,6 @@ class TtsSpeedRate(SpeedRate):
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
         self.shoud_videorate=False
-        self.max_audio_speed_rate=100
 
 
     def run(self):
@@ -852,7 +887,7 @@ class TtsSpeedRate(SpeedRate):
                 self.audio_data.append({
                     "filename": it['filename'],
                     "dubb_time": dubb_dur,
-                    "target_time": source_dur # 不限制，强制加速到对齐
+                    "target_time": max(source_dur, int(dubb_dur / self.max_audio_speed_rate))
                 })
 
             logger.debug(f"[Calc] Mode={mode_log} Line={it['line']} | Source={source_dur} Dubb={dubb_dur} -> TargetA={audio_target}")
