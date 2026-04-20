@@ -110,35 +110,57 @@ def qwen3tts_fun(
     _prompt_cache = {}
 
     # P1 A.2: 一次性探测 generate_voice_clone 是否接受 instruct kwarg
+    # P0: 一次性探测 generate_voice_clone 是否接受 max_new_tokens kwarg (防重复循环)
     # None=未探测, True=支持, False=不支持 (后续静默跳过, 不再重试)
     _clone_instruct_supported = {'v': None}
+    _clone_max_tokens_supported = {'v': None}
 
-    def _call_voice_clone(batch_texts, prompts, instruct_str):
-        """调用 generate_voice_clone, 动态检测是否支持 instruct 参数。
-        不支持时自动回退无 instruct 模式。"""
+    def _call_voice_clone(batch_texts, prompts, instruct_str, max_new_tokens=None):
+        """调用 generate_voice_clone, 动态检测是否支持 instruct / max_new_tokens 参数。
+        任一不支持时自动回退并记住, 后续不再重试对应参数。"""
         text_arg = batch_texts if len(batch_texts) > 1 else batch_texts[0]
-        if instruct_str and _clone_instruct_supported['v'] is not False:
+        base_kwargs = {
+            'text': text_arg,
+            'language': language,
+            'voice_clone_prompt': prompts,
+        }
+        add_instruct = bool(instruct_str) and _clone_instruct_supported['v'] is not False
+        add_max_tok = bool(max_new_tokens) and _clone_max_tokens_supported['v'] is not False
+
+        # 最多重试 3 次, 每次根据 TypeError 信息剥离 1 个 kwarg 后再试
+        for _ in range(3):
+            kwargs = dict(base_kwargs)
+            if add_instruct:
+                kwargs['instruct'] = instruct_str
+            if add_max_tok:
+                kwargs['max_new_tokens'] = int(max_new_tokens)
             try:
-                wavs, sr = BASE_OBJ.generate_voice_clone(
-                    text=text_arg,
-                    language=language,
-                    voice_clone_prompt=prompts,
-                    instruct=instruct_str,
-                )
-                if _clone_instruct_supported['v'] is None:
+                wavs, sr = BASE_OBJ.generate_voice_clone(**kwargs)
+                if add_instruct and _clone_instruct_supported['v'] is None:
                     _clone_instruct_supported['v'] = True
                     logger.info('[qwen3tts] generate_voice_clone 支持 instruct 参数, 启用情感透传')
+                if add_max_tok and _clone_max_tokens_supported['v'] is None:
+                    _clone_max_tokens_supported['v'] = True
+                    logger.info(
+                        f'[qwen3tts] generate_voice_clone 支持 max_new_tokens, 启用 token 上限 '
+                        f'(本次={max_new_tokens})'
+                    )
                 return wavs, sr
             except TypeError as e:
-                if 'instruct' in str(e):
+                msg = str(e)
+                if 'max_new_tokens' in msg and add_max_tok:
+                    _clone_max_tokens_supported['v'] = False
+                    add_max_tok = False
+                    logger.info('[qwen3tts] generate_voice_clone 不支持 max_new_tokens, 回退无 token 上限')
+                    continue
+                if 'instruct' in msg and add_instruct:
                     _clone_instruct_supported['v'] = False
+                    add_instruct = False
                     logger.info('[qwen3tts] generate_voice_clone 不支持 instruct, clone 路径不透传情感')
-                else:
-                    raise
-        # 默认 / 已知不支持 / 无 instruct
-        return BASE_OBJ.generate_voice_clone(
-            text=text_arg, language=language, voice_clone_prompt=prompts,
-        )
+                    continue
+                raise
+        # 三次都不行, 兜底无 kwargs
+        return BASE_OBJ.generate_voice_clone(**base_kwargs)
 
     def _get_prompt_item(ref_wav, ref_text):
         use_xvec = not bool(ref_text)
@@ -231,6 +253,39 @@ def qwen3tts_fun(
     CLONE_ABS_DURATION_LIMIT_MS = 15000
     CLONE_MIN_VALID_MS = 250
     CLONE_FALLBACK_ROLE = "Vivian"
+
+    # --- P0 克隆护栏: 防止 Qwen3-TTS 在坏 ref / 过短 slot 上陷入重复循环 ---
+    # 实测 1 行 0.5s 字幕 + 低质量 ref 可让 decoder 生成 8 分钟废音频,
+    # 单 call 阻塞 90+ 分钟 (RTF 11x 本地推理). 下面三条拦截线从源头防御。
+    CLONE_MIN_SLOT_MS = 500                 # slot 低于此不值得克隆, 直接 fallback
+    CLONE_REF_MIN_VOICED_SEC = 0.8          # ref 里有效语音至少 0.8s
+    CLONE_REF_MIN_VOICED_RATIO = 0.35       # ref 里有效语音占比至少 35%
+    # Qwen3-TTS 12Hz 码本 ~60 audio tok/s; 给 slot × 5 上限, 防 decoder 跑飞
+    CLONE_MAX_TOKENS_PER_SEC = 60
+    CLONE_MAX_TOKENS_SLOT_MULT = 5
+    CLONE_MAX_TOKENS_FLOOR = 200            # 下限, 防太小把正常行切断
+    CLONE_MAX_TOKENS_CEIL = 2400            # 上限, 对应 ~40s 音频
+
+    def _ref_voiced_stats(wav_path):
+        """简单能量 VAD (10ms 帧, RMS>0.01 算 voiced). 返回 (voiced_sec, voiced_ratio)。
+        失败或文件异常返回 (0.0, 0.0)。"""
+        try:
+            import numpy as np
+            data, sr = sf.read(str(wav_path), dtype='float32')
+            if data.ndim > 1:
+                data = data.mean(axis=1)
+            if sr <= 0 or len(data) == 0:
+                return 0.0, 0.0
+            frame = max(1, int(sr * 0.01))
+            n_frames = len(data) // frame
+            if n_frames <= 0:
+                return 0.0, 0.0
+            arr = data[:n_frames * frame].reshape(n_frames, frame)
+            rms = np.sqrt((arr ** 2).mean(axis=1) + 1e-12)
+            voiced = int((rms > 0.01).sum())
+            return voiced * 0.01, voiced / n_frames
+        except Exception:
+            return 0.0, 0.0
 
     def _slot_duration_ms(it):
         try:
@@ -393,9 +448,32 @@ def qwen3tts_fun(
             # kind == 'clone': 向后扫描, 收集连续同 (wavfile, ref_text, instruct) 的条目, 组 batch
             # P1 A.2: instruct 不同时分 batch, 避免把一句的情感套在另一句上
             _, wavfile, ref_text, filename, text, batch_instruct = resolved
+
+            # P0 护栏 1: 过短 slot 跳过克隆, 直接 fallback (极短行 ROI 低且最容易触发重复循环)
+            _lead_slot_ms = _slot_duration_ms(it)
+            if _lead_slot_ms < CLONE_MIN_SLOT_MS:
+                if _fallback_custom_voice(
+                    it, filename,
+                    f"preflight skip clone: slot too short {_lead_slot_ms}ms < {CLONE_MIN_SLOT_MS}ms"
+                ):
+                    i += 1
+                    continue
+            # P0 护栏 2: ref 语音占比检测, 坏 ref 直接 fallback
+            _voiced_sec, _voiced_ratio = _ref_voiced_stats(wavfile)
+            if _voiced_sec < CLONE_REF_MIN_VOICED_SEC or _voiced_ratio < CLONE_REF_MIN_VOICED_RATIO:
+                if _fallback_custom_voice(
+                    it, filename,
+                    f"preflight skip clone: ref voiced={_voiced_sec:.2f}s "
+                    f"ratio={_voiced_ratio:.2f} (need ≥{CLONE_REF_MIN_VOICED_SEC}s & "
+                    f"≥{CLONE_REF_MIN_VOICED_RATIO})"
+                ):
+                    i += 1
+                    continue
+
             batch_filenames = [filename]
             batch_texts = [text]
             batch_src_idx = [i]
+            batch_slot_ms = [_lead_slot_ms]
             j = i + 1
             while j < _len and len(batch_texts) < MAX_BATCH:
                 r = _resolve_clone_item(queue_tts[j])
@@ -404,6 +482,7 @@ def qwen3tts_fun(
                 batch_filenames.append(r[3])
                 batch_texts.append(r[4])
                 batch_src_idx.append(j)
+                batch_slot_ms.append(_slot_duration_ms(queue_tts[j]))
                 j += 1
 
             prompt_item = _get_prompt_item(wavfile, ref_text)
@@ -415,11 +494,17 @@ def qwen3tts_fun(
                 "text": f'{tag} {role} batch={len(batch_texts)} ref={Path(wavfile).name} rate={queue_tts[batch_src_idx[0]].get("rate", "+0%")}{_emotion_log}'
             }))
 
+            # P0 护栏 3: 估算 max_new_tokens, 防 decoder 跑飞生成几分钟废音频
+            _batch_sec = max(1, sum(batch_slot_ms)) / 1000.0
+            _max_tokens = int(_batch_sec * CLONE_MAX_TOKENS_PER_SEC * CLONE_MAX_TOKENS_SLOT_MULT)
+            _max_tokens = max(CLONE_MAX_TOKENS_FLOOR, min(CLONE_MAX_TOKENS_CEIL, _max_tokens))
+
             synth_started = time.perf_counter()
             wavs, sr = _call_voice_clone(
                 batch_texts,
                 [prompt_item] * len(batch_texts),
                 batch_instruct,
+                max_new_tokens=_max_tokens,
             )
             stats["clone_batches"] += 1
             stats["clone_items"] += len(batch_texts)
